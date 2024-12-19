@@ -1,13 +1,11 @@
 use clap::{Args, Parser, Subcommand};
 use futures::{stream, StreamExt, TryStreamExt};
 use ipfs::IpfsClient;
-use kg_core::ids;
-use kg_core::pb::grc20;
-use kg_node::kg::{
-    self,
-    entity::{Entity, EntityNode},
+use sdk::{ids, pb::grc20};
+use sink::{
+    kg::{self, mapping::DefaultAttributes},
+    ops::conversions,
 };
-use kg_node::ops::conversions;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -48,26 +46,29 @@ async fn main() -> anyhow::Result<()> {
             unimplemented!()
         }
         Command::Describe { id } => {
-            let entity_node = kg_client
-                .find_node_by_id::<EntityNode>(&id)
+            let entity = kg_client
+                .find_node_by_id::<DefaultAttributes>(&id)
                 .await?
                 .expect("Entity not found");
 
-            let entity = Entity::from_entity(kg_client.clone(), entity_node);
+            println!("Entity: {}", entity.name_or_id());
 
-            println!("Entity: {}", entity);
-
-            let attributes = entity.attributes().await?;
+            let attributes = kg_client
+                .attribute_nodes::<DefaultAttributes>(entity.id())
+                .await?;
 
             for attribute in attributes {
-                println!("\tAttribute: {}", attribute);
-                if let Some(value_type) = attribute.value_type().await? {
-                    println!("\t\tValue type: {}", value_type);
+                println!("\tAttribute: {}", attribute.name_or_id());
+                if let Some(value_type) = kg_client
+                    .value_type_node::<DefaultAttributes>(attribute.id())
+                    .await?
+                {
+                    println!("\t\tValue type: {}", value_type.name_or_id());
                 }
             }
         }
         Command::Codegen => {
-            let code = kg_codegen::codegen(&kg_client).await?;
+            let code = codegen::codegen(&kg_client).await?;
             std::fs::write("./src/space.ts", code)?;
             println!("Generated code has been written to ./src/space.ts");
         }

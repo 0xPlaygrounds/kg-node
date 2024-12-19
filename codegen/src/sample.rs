@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use futures::{stream, StreamExt, TryStreamExt};
-use kg_node::kg::grc20;
-use kg_node::system_ids;
+use sink::kg::grc20;
+use sink::system_ids;
 use swc::config::SourceMapsConfig;
 use swc::PrintArgs;
 use swc_common::{sync::Lrc, SourceMap, Span, SyntaxContext};
-use swc_core::{quote, quote_expr};
+use swc_sdk::{quote, quote_expr};
 use swc_ecma_ast::{
     AssignExpr, AssignOp, AssignTarget, BindingIdent, BlockStmt, Class, ClassDecl, ClassMember, ClassMethod, ClassProp, Constructor, Decl, EsVersion, Expr, ExprStmt, Function, Ident, IdentName, MemberExpr, MemberProp, MethodKind, Param, ParamOrTsParamProp, Pat, PropName, ReturnStmt, SimpleAssignTarget, Stmt, ThisExpr, Tpl, TsInterfaceBody, TsInterfaceDecl, TsKeywordType, TsPropertySignature, TsType, TsTypeAnn, TsTypeElement
 };
