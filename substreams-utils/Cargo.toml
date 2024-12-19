@@ -1,0 +1,27 @@
+[package]
+name = "substreams-utils"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1"
+async-stream = "0.3"
+reqwest = "0.11"
+tokio = { version = "1.27", features = [
+    "time",
+    "sync",
+    "macros",
+    "test-util",
+    "rt-multi-thread",
+    "parking_lot",
+] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-retry = "0.3"
+tonic = { version = "0.12", features = ["gzip", "tls-roots"] }
+prost = "0.13"
+prost-types = "0.13"
+thiserror = "1"
+chrono = "0.4.38"
+futures = "0.3.31"

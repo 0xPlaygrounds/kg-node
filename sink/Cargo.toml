@@ -1,27 +1,33 @@
 [package]
-name = "substreams-sink-rust"
+name = "sink"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-anyhow = "1"
-async-stream = "0.3"
-reqwest = "0.11"
-tokio = { version = "1.27", features = [
-    "time",
-    "sync",
-    "macros",
-    "test-util",
-    "rt-multi-thread",
-    "parking_lot",
-] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-retry = "0.3"
-tonic = { version = "0.12", features = ["gzip", "tls-roots"] }
-prost = "0.13"
-prost-types = "0.13"
-thiserror = "1"
+anyhow = "1.0.89"
 chrono = "0.4.38"
+clap = { version = "4.5.20", features = ["derive"] }
 futures = "0.3.31"
+heck = "0.5.0"
+md-5 = "0.10.6"
+neo4rs = "0.8.0"
+prost = "0.13.3"
+prost-types = "0.13.3"
+reqwest = "0.12.8"
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+thiserror = "2.0.3"
+tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+const_format = "0.2.33"
+
+substreams-utils = { version = "0.1.0", path = "../substreams-utils" }
+sdk = { version = "0.1.0", path = "../sdk" }
+ipfs = { version = "0.1.0", path = "../ipfs" }
+web3-utils = { version = "0.1.0", path = "../web3-utils" }
+
+[dev-dependencies]
+serde_path_to_error = "0.1.16"
+
+

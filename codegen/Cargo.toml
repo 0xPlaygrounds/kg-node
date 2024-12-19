@@ -1,11 +1,9 @@
 [package]
-name = "kg-codegen"
+name = "codegen"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-kg-core = { version = "0.1.0", path = "../core" }
-kg-node = { version = "0.1.0", path = "../node" }
 anyhow = "1.0.91"
 futures = "0.3.31"
 heck = "0.5.0"
@@ -16,3 +14,6 @@ swc_ecma_ast = "2.0.0"
 swc_ecma_codegen = "2.0.0"
 swc_ecma_parser = { version = "3.0.0", features = ["typescript"] }
 tracing = "0.1.40"
+
+sdk = { version = "0.1.0", path = "../sdk" }
+sink = { version = "0.1.0", path = "../sink" }
