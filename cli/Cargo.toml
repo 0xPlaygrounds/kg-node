@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-kg-codegen = { version = "0.1.0", path = "../codegen" }
-kg-core = { version = "0.1.0", path = "../core" }
-kg-node = { version = "0.1.0", path = "../node" }
+codegen = { version = "0.1.0", path = "../codegen" }
+sdk = { version = "0.1.0", path = "../sdk" }
+sink = { version = "0.1.0", path = "../sink" }
 ipfs = { version = "0.1.0", path = "../ipfs" }
 
 anyhow = "1.0.91"

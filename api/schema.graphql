@@ -1,0 +1,123 @@
+"""Entity object"""
+type Entity {
+  """Entity ID"""
+  id: String!
+
+  """Entity name (if available)"""
+  name: String
+
+  """
+  The space ID of the entity (note: the same entity can exist in multiple spaces)
+  """
+  spaceId: String!
+  createdAt: String!
+  createdAtBlock: String!
+  updatedAt: String!
+  updatedAtBlock: String!
+
+  """Types of the entity (which are entities themselves)"""
+  types: [Entity!]!
+
+  """Attributes of the entity"""
+  attributes: [Triple!]!
+
+  """Relations outgoing from the entity"""
+  relations: [Relation!]!
+}
+
+"""Entity filter input object"""
+input EntityFilter {
+  """Filter by entity types"""
+  types: [String!]
+}
+
+type Options {
+  format: String
+  unit: String
+  language: String
+}
+
+type Query {
+  """Returns a single entity identified by its ID and space ID"""
+  entity(id: String!, spaceId: String!): Entity
+
+  """
+  Returns multiple entities according to the provided space ID and filter
+  """
+  entities(spaceId: String!, filter: EntityFilter): [Entity!]!
+
+  """Returns a single relation identified by its ID and space ID"""
+  relation(id: String!, spaceId: String!): Relation
+
+  """
+  Returns multiple relations according to the provided space ID and filter
+  """
+  relations(spaceId: String!, filter: RelationFilter): [Relation!]!
+}
+
+"""
+Relation object
+
+Note: Relations are also entities, but they have a different structure in the database.
+In other words, the Relation object is a "view" on a relation entity. All relations
+can also be queried as entities.
+"""
+type Relation {
+  """Relation ID"""
+  id: String!
+
+  """Relation name (if available)"""
+  name: String
+  createdAt: String!
+  createdAtBlock: String!
+  updatedAt: String!
+  updatedAtBlock: String!
+
+  """Attributes of the relation"""
+  attributes: [Triple!]!
+
+  """Relation types of the relation"""
+  relationTypes: [Entity!]!
+
+  """Entity from which the relation originates"""
+  from: Entity!
+
+  """Entity to which the relation points"""
+  to: Entity!
+
+  """Relations outgoing from the relation"""
+  relations: [Relation!]!
+}
+
+"""Relation filter input object"""
+input RelationFilter {
+  """Filter by relation types"""
+  relationTypes: [String!]
+}
+
+type Triple {
+  """Attribute ID of the triple"""
+  attribute: String!
+
+  """Value of the triple"""
+  value: String!
+
+  """Value type of the triple"""
+  valueType: ValueType!
+
+  """Options of the triple (if any)"""
+  options: Options!
+
+  """Name of the attribute (if available)"""
+  name: String
+}
+
+enum ValueType {
+  TEXT
+  NUMBER
+  CHECKBOX
+  URL
+  TIME
+  POINT
+}
+

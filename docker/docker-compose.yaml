@@ -15,10 +15,11 @@ services:
       timeout: 10s
       retries: 20
       start_period: 3s
-  kg-node:
+  sink:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      target: sink
     depends_on:
       neo4j:
         condition: service_healthy
@@ -28,3 +29,17 @@ services:
       neo4j_pass: neo4j
       SUBSTREAMS_API_TOKEN: ${SUBSTREAMS_API_TOKEN}
       SUBSTREAMS_ENDPOINT_URL: ${SUBSTREAMS_ENDPOINT_URL}
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: api
+    ports:
+      - "80:8080"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      neo4j_uri: neo4j://neo4j:7687
+      neo4j_user: neo4j
+      neo4j_pass: neo4j
