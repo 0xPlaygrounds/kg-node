@@ -1,6 +1,6 @@
 use std::{fmt::Display, sync::Arc, time::Duration};
 
-use http::{uri::Scheme, Uri};
+use http::Uri;
 use tonic::{
     codec::CompressionEncoding,
     codegen::http,
@@ -30,12 +30,13 @@ impl SubstreamsEndpoint {
             .parse::<Uri>()
             .expect("the url should have been validated by now, so it is a valid Uri");
 
-        let endpoint = match uri.scheme().unwrap_or(&Scheme::HTTP).as_str() {
-            "http" => Channel::builder(uri),
-            "https" => Channel::builder(uri)
+        let endpoint = match uri.scheme_str() {
+            Some("http") => Channel::builder(uri),
+            Some("https") => Channel::builder(uri)
                 .tls_config(ClientTlsConfig::new().with_native_roots())
                 .expect("TLS config on this host is invalid"),
-            _ => panic!("invalid uri scheme for firehose endpoint"),
+            None => panic!("substreams endpoint uri must have a scheme (http or https)"),
+            _ => panic!("invalid uri scheme for substreams endpoint"),
         }
         .connect_timeout(Duration::from_secs(10))
         .tcp_keepalive(Some(Duration::from_secs(30)));
