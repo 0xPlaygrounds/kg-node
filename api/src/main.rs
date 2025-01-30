@@ -3,6 +3,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
+    http::Method,
     response::{Html, Json},
     routing::{get, on, MethodFilter},
     Extension, Router,
@@ -12,6 +13,7 @@ use juniper::{EmptyMutation, EmptySubscription, RootNode};
 use juniper_axum::{extract::JuniperRequest, graphiql, playground, response::JuniperResponse};
 use sdk::neo4rs;
 use tokio::net::TcpListener;
+use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use api::{context::KnowledgeGraph, schema::Query};
@@ -64,6 +66,10 @@ async fn main() -> anyhow::Result<()> {
         EmptySubscription::<KnowledgeGraph>::new(),
     );
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST]);
+
     let app = Router::new()
         .route(
             "/graphql",
@@ -79,7 +85,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/playground", get(playground("/graphql", "/subscriptions")))
         .route("/", get(homepage))
         .layer(Extension(Arc::new(schema)))
-        .layer(Extension(KnowledgeGraph::new(Arc::new(neo4j))));
+        .layer(Extension(KnowledgeGraph::new(Arc::new(neo4j))))
+        .layer(cors);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = TcpListener::bind(addr)
