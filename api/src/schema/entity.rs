@@ -1,9 +1,10 @@
+use futures::TryStreamExt;
 use juniper::{graphql_object, Executor, FieldResult, ScalarValue};
 
 use sdk::{
     mapping::{
         entity_node,
-        query_utils::{prop_filter, Query},
+        query_utils::{prop_filter, Query, QueryStream},
         triple, EntityNode,
     },
     neo4rs, system_ids,
@@ -115,7 +116,7 @@ impl Entity {
     async fn blocks<'a, S: ScalarValue>(
         &'a self,
         executor: &'a Executor<'_, '_, KnowledgeGraph, S>,
-    ) -> Vec<Entity> {
+    ) -> FieldResult<Vec<Entity>> {
         let types_rel = self
             .node
             .get_outbound_relations(
@@ -125,26 +126,26 @@ impl Entity {
             )
             .relation_type(prop_filter::value(system_ids::BLOCKS))
             .send()
-            .await
-            .expect("Failed to get types");
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
 
-        entity_node::find_many(&executor.context().0)
+        Ok(entity_node::find_many(&executor.context().0)
             .id(prop_filter::value_in(
                 types_rel.into_iter().map(|rel| rel.to).collect(),
             ))
             .send()
-            .await
-            .expect("Failed to get types entities")
-            .into_iter()
-            .map(|node| Entity::new(node, self.space_id.clone(), self.space_version.clone()))
-            .collect()
+            .await?
+            .map_ok(|node| Entity::new(node, self.space_id.clone(), self.space_version.clone()))
+            .try_collect::<Vec<_>>()
+            .await?)
     }
 
     /// Types of the entity (which are entities themselves)
     async fn types<'a, S: ScalarValue>(
         &'a self,
         executor: &'a Executor<'_, '_, KnowledgeGraph, S>,
-    ) -> Vec<Entity> {
+    ) -> FieldResult<Vec<Entity>> {
         let types_rel = self
             .node
             .get_outbound_relations(
@@ -154,19 +155,19 @@ impl Entity {
             )
             .relation_type(prop_filter::value(system_ids::TYPES_ATTRIBUTE))
             .send()
-            .await
-            .expect("Failed to get types");
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
 
-        entity_node::find_many(&executor.context().0)
+        Ok(entity_node::find_many(&executor.context().0)
             .id(prop_filter::value_in(
                 types_rel.into_iter().map(|rel| rel.to).collect(),
             ))
             .send()
-            .await
-            .expect("Failed to get types entities")
-            .into_iter()
-            .map(|node| Entity::new(node, self.space_id.clone(), self.space_version.clone()))
-            .collect()
+            .await?
+            .map_ok(|node| Entity::new(node, self.space_id.clone(), self.space_version.clone()))
+            .try_collect::<Vec<_>>()
+            .await?)
     }
 
     /// The space ID of the entity (note: the same entity can exist in multiple spaces)
@@ -196,7 +197,7 @@ impl Entity {
         &self,
         _filter: Option<AttributeFilter>,
         executor: &'_ Executor<'_, '_, KnowledgeGraph, S>,
-    ) -> Vec<Triple> {
+    ) -> FieldResult<Vec<Triple>> {
         let mut query = triple::find_many(&executor.context().0)
             .entity_id(prop_filter::value(&self.node.id))
             .space_id(prop_filter::value(&self.space_id));
@@ -205,13 +206,12 @@ impl Entity {
             query = query.space_version(version);
         }
 
-        query
+        Ok(query
             .send()
-            .await
-            .expect("Failed to get attributes")
-            .into_iter()
-            .map(|triple| Triple::new(triple, self.space_id.clone(), self.space_version.clone()))
-            .collect()
+            .await?
+            .map_ok(|triple| Triple::new(triple, self.space_id.clone(), self.space_version.clone()))
+            .try_collect::<Vec<_>>()
+            .await?)
     }
 
     /// Relations outgoing from the entity
@@ -233,11 +233,11 @@ impl Entity {
         Ok(base_query
             .send()
             .await?
-            .into_iter()
-            .map(|relation| {
+            .map_ok(|relation| {
                 Relation::new(relation, self.space_id.clone(), self.space_version.clone())
             })
-            .collect())
+            .try_collect::<Vec<_>>()
+            .await?)
     }
 
     // TODO: Add version filtering (e.g.: time range, edit author)

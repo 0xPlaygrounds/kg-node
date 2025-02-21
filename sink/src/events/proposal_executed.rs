@@ -25,20 +25,6 @@ impl EventHandler {
             .send()
             .await?;
 
-        // Find space
-        // let maybe_space_id = triple::find_many(&self.neo4j)
-        //     .attribute_id(prop_filter::value_in(vec![
-        //         indexer_ids::SPACE_VOTING_PLUGIN_ADDRESS.into(),
-        //         indexer_ids::SPACE_MEMBER_PLUGIN_ADDRESS.into(),
-        //         indexer_ids::SPACE_PERSONAL_PLUGIN_ADDRESS.into(),
-        //     ]))
-        //     .value(prop_filter::value(&plugin_address))
-        //     .space_id(prop_filter::value(indexer_ids::INDEXER_SPACE_ID))
-        //     .send()
-        //     .await?
-        //     .into_iter()
-        //     .next();
-
         if let Some(proposal) = maybe_proposal {
             // Update proposal status
             Triple::new(

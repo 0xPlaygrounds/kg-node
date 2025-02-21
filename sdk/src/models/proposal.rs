@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use futures::{pin_mut, StreamExt};
 use serde::{Deserialize, Serialize};
 use web3_utils::checksum_address;
 
@@ -10,7 +11,7 @@ use crate::{
         self,
         attributes::{FromAttributes, IntoAttributes},
         entity,
-        query_utils::{AttributeFilter, PropFilter, Query},
+        query_utils::{AttributeFilter, PropFilter, QueryStream},
         Entity, Relation, Value,
     },
     pb,
@@ -41,21 +42,21 @@ impl Proposal {
         proposal_id: &str,
         plugin_address: &str,
     ) -> Result<Option<Entity<Self>>, DatabaseError> {
-        Ok(
-            entity::find_many(neo4j, indexer_ids::INDEXER_SPACE_ID, None)
-                .attribute(
-                    AttributeFilter::new("onchain_proposal_id")
-                        .value(PropFilter::default().value(proposal_id)),
-                )
-                .attribute(
-                    AttributeFilter::new("plugin_address")
-                        .value(PropFilter::default().value(checksum_address(plugin_address))),
-                )
-                .send()
-                .await?
-                .into_iter()
-                .next(),
-        )
+        let stream = entity::find_many(neo4j, indexer_ids::INDEXER_SPACE_ID, None)
+            .attribute(
+                AttributeFilter::new("onchain_proposal_id")
+                    .value(PropFilter::default().value(proposal_id)),
+            )
+            .attribute(
+                AttributeFilter::new("plugin_address")
+                    .value(PropFilter::default().value(checksum_address(plugin_address))),
+            )
+            .send()
+            .await?;
+
+        pin_mut!(stream);
+
+        stream.next().await.transpose()
     }
 
     // /// Returns a query to set the status of a proposal given its ID

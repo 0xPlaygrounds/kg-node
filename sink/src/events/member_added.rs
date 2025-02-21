@@ -51,7 +51,7 @@ impl EventHandler {
         // };
 
         if let Some(space) =
-            Space::find_by_dao_address(&self.neo4j, &member_added.dao_address).await?
+            Space::find_entity_by_dao_address(&self.neo4j, &member_added.dao_address).await?
         {
             let member = Account::new(member_added.member_address.clone());
             let member_rel = SpaceMember::new(&member.id, &space.id);

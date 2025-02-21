@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use neo4rs::BoltType;
 use serde::Deserialize;
 
@@ -8,7 +8,7 @@ use crate::{error::DatabaseError, indexer_ids, models::BlockMetadata, pb, system
 
 use super::{
     attributes, entity_node,
-    query_utils::{PropFilter, Query, QueryPart, VersionFilter},
+    query_utils::{PropFilter, Query, QueryPart, QueryStream, VersionFilter},
     triple, AttributeNode, Attributes, Triple, Value,
 };
 
@@ -808,19 +808,25 @@ impl FindManyQuery {
     }
 }
 
-// TODO: (optimization) refactor into stream
-impl Query<Vec<RelationNode>> for FindManyQuery {
-    async fn send(self) -> Result<Vec<RelationNode>, DatabaseError> {
+impl QueryStream<RelationNode> for FindManyQuery {
+    async fn send(
+        self,
+    ) -> Result<impl Stream<Item = Result<RelationNode, DatabaseError>>, DatabaseError> {
         let neo4j = self.neo4j.clone();
-        let query = self.into_query_part().build();
 
-        neo4j
+        let query = if cfg!(debug_assertions) {
+            let query_part = self.into_query_part();
+            tracing::info!("relation_node::FindManyQuery:\n{}", query_part);
+            query_part.build()
+        } else {
+            self.into_query_part().build()
+        };
+
+        Ok(neo4j
             .execute(query)
             .await?
             .into_stream_as::<RelationNode>()
-            .map_err(DatabaseError::from)
-            .try_collect::<Vec<_>>()
-            .await
+            .map_err(DatabaseError::from))
     }
 }
 
@@ -993,7 +999,10 @@ mod tests {
             .from_id(PropFilter::default().value("alice"))
             .send()
             .await
-            .expect("Failed to find relations");
+            .expect("Failed to find relations")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect triples");
 
         assert_eq!(found_relations, relation_nodes);
     }
@@ -1046,7 +1055,10 @@ mod tests {
             .from_id(PropFilter::default().value("alice"))
             .send()
             .await
-            .expect("Failed to find relations");
+            .expect("Failed to find relations")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect triples");
 
         assert_eq!(found_relations, relation_nodes);
     }

@@ -15,7 +15,8 @@ impl EventHandler {
         block: &models::BlockMetadata,
     ) -> Result<(), HandlerError> {
         let space =
-            Space::find_by_dao_address(&self.neo4j, &initial_editor_added.dao_address).await?;
+            Space::find_entity_by_dao_address(&self.neo4j, &initial_editor_added.dao_address)
+                .await?;
 
         if let Some(space) = &space {
             stream::iter(&initial_editor_added.addresses)

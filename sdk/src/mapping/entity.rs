@@ -1,10 +1,13 @@
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 
-use crate::{error::DatabaseError, ids, mapping::EntityNode, models::BlockMetadata, system_ids};
+use crate::{error::DatabaseError, ids, mapping::AttributeNode, models::BlockMetadata, system_ids};
 
 use super::{
     attributes::{self, FromAttributes, IntoAttributes},
-    query_utils::{AttributeFilter, PropFilter, Query, QueryPart},
+    prop_filter,
+    query_utils::{
+        query_part, AttributeFilter, PropFilter, Query, QueryPart, QueryStream, VersionFilter,
+    },
     relation_node, RelationNode,
 };
 
@@ -185,6 +188,8 @@ impl<T: FromAttributes> Query<Option<Entity<T>>> for FindOneQuery {
             .from_id(PropFilter::default().value(self.entity_id.clone()))
             .relation_type(PropFilter::default().value(system_ids::TYPES_ATTRIBUTE))
             .send()
+            .await?
+            .try_collect::<Vec<_>>()
             .await?;
 
         Ok(attributes.map(|data| {
@@ -195,20 +200,25 @@ impl<T: FromAttributes> Query<Option<Entity<T>>> for FindOneQuery {
 
 pub struct FindManyQuery {
     neo4j: neo4rs::Graph,
-    space_id: String,
-    space_version: Option<String>,
     id: Option<PropFilter<String>>,
     attributes: Vec<AttributeFilter>,
+    limit: usize,
+    skip: Option<usize>,
+
+    space_id: PropFilter<String>,
+    version: VersionFilter,
 }
 
 impl FindManyQuery {
-    fn new(neo4j: neo4rs::Graph, space_id: String, space_version: Option<String>) -> Self {
+    fn new(neo4j: neo4rs::Graph, space_id: String, version: Option<String>) -> Self {
         FindManyQuery {
             neo4j,
-            space_id,
-            space_version,
             id: None,
             attributes: vec![],
+            limit: 100,
+            skip: None,
+            space_id: prop_filter::value(space_id),
+            version: VersionFilter::new(version),
         }
     }
 
@@ -222,61 +232,80 @@ impl FindManyQuery {
         self
     }
 
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    pub fn skip(mut self, skip: usize) -> Self {
+        self.skip = Some(skip);
+        self
+    }
+
     fn into_query_part(self) -> QueryPart {
-        let mut query_part = QueryPart::default().match_clause("(e)").return_clause("e");
+        let mut query_part = QueryPart::default()
+            .match_clause("(e:Entity)")
+            .limit(self.limit);
 
         if let Some(id) = self.id {
             query_part.merge_mut(id.into_query_part("e", "id"));
+        }
+
+        if let Some(skip) = self.skip {
+            query_part = query_part.skip(skip);
         }
 
         for attribute in self.attributes {
             query_part.merge_mut(attribute.into_query_part("e"));
         }
 
-        query_part
+        query_part.with_clause("e", {
+            QueryPart::default()
+                .match_clause("(e) -[r:ATTRIBUTE]-> (n:Attribute)")
+                .merge(self.space_id.into_query_part("r", "space_id"))
+                .merge(self.version.into_query_part("r"))
+                .with_clause(
+                    "e, collect(n{.*}) AS attrs",
+                    query_part::return_query("e{.id, attributes: attrs}"),
+                )
+        })
     }
 }
 
-// TODO: (optimization) Turn this into a stream instead of returning vec
-impl<T: FromAttributes> Query<Vec<Entity<T>>> for FindManyQuery {
-    async fn send(self) -> Result<Vec<Entity<T>>, DatabaseError> {
-        let neo4j = &self.neo4j.clone();
-        let space_id = &self.space_id.clone();
-        let space_version = &self.space_version.clone();
+impl<T: FromAttributes> QueryStream<Entity<T>> for FindManyQuery {
+    async fn send(
+        self,
+    ) -> Result<impl Stream<Item = Result<Entity<T>, DatabaseError>>, DatabaseError> {
+        let neo4j = self.neo4j.clone();
 
-        let query = self.into_query_part().build();
+        let query = if cfg!(debug_assertions) {
+            let query_part = self.into_query_part();
+            tracing::info!("entity::FindManyQuery:\n{}", query_part);
+            query_part.build()
+        } else {
+            self.into_query_part().build()
+        };
 
         #[derive(Debug, serde::Deserialize)]
         struct RowResult {
-            e: EntityNode,
+            id: String,
+            attributes: Vec<AttributeNode>,
         }
 
-        let entity_nodes = neo4j
+        let stream = neo4j
             .execute(query)
             .await?
             .into_stream_as::<RowResult>()
             .map_err(DatabaseError::from)
-            .and_then(|row| async move { Ok(row.e) })
-            .try_collect::<Vec<_>>()
-            .await?;
+            .map(|attrs| {
+                attrs.and_then(|attrs| {
+                    T::from_attributes(attrs.attributes.into())
+                        .map(|data| Entity::new(attrs.id, data))
+                        .map_err(DatabaseError::from)
+                })
+            });
 
-        Ok(stream::iter(entity_nodes)
-            .map(|entity| async move {
-                let attrs = entity
-                    .get_attributes(neo4j, space_id, space_version.clone())
-                    .send()
-                    .await?;
-
-                Result::<_, DatabaseError>::Ok(
-                    attrs.map(|data| Entity::new(entity.id.clone(), data)),
-                )
-            })
-            .buffered(18)
-            .try_collect::<Vec<Option<Entity<T>>>>()
-            .await?
-            .into_iter()
-            .flatten()
-            .collect())
+        Ok(stream)
     }
 }
 
@@ -286,6 +315,7 @@ mod tests {
 
     use super::*;
 
+    use futures::pin_mut;
     use testcontainers::{
         core::{IntoContainerPort, WaitFor},
         runners::AsyncRunner,
@@ -368,6 +398,68 @@ mod tests {
             .send()
             .await
             .expect("Failed to find entity")
+            .expect("Entity not found");
+
+        assert_eq!(found_entity, entity);
+    }
+
+    #[tokio::test]
+    async fn test_insert_find_many() {
+        // Setup a local Neo 4J container for testing. NOTE: docker service must be running.
+        let container = GenericImage::new("neo4j", "2025.01.0-community")
+            .with_wait_for(WaitFor::Duration {
+                length: std::time::Duration::from_secs(5),
+            })
+            .with_exposed_port(BOLT_PORT.tcp())
+            .with_exposed_port(HTTP_PORT.tcp())
+            .with_env_var("NEO4J_AUTH", "none")
+            .start()
+            .await
+            .expect("Failed to start Neo 4J container");
+
+        let port = container.get_host_port_ipv4(BOLT_PORT).await.unwrap();
+        let host = container.get_host().await.unwrap().to_string();
+
+        let neo4j = neo4rs::Graph::new(format!("neo4j://{host}:{port}"), "user", "password")
+            .await
+            .unwrap();
+
+        let foo = Foo {
+            name: "Alice".into(),
+            bar: 42,
+        };
+
+        triple::insert_many(&neo4j, &BlockMetadata::default(), "ROOT", "0")
+            .triples(vec![
+                Triple::new("foo_type", "name", "Foo"),
+                Triple::new(system_ids::TYPES_ATTRIBUTE, "name", "Types"),
+            ])
+            .send()
+            .await
+            .expect("Failed to insert triples");
+
+        let entity = Entity::new("abc", foo).with_type("foo_type");
+
+        entity
+            .clone()
+            .insert(&neo4j, &BlockMetadata::default(), "ROOT", "0")
+            .send()
+            .await
+            .expect("Failed to insert entity");
+
+        let stream = find_many(&neo4j, "ROOT", None)
+            .attribute(AttributeFilter::new("name").value(prop_filter::value("Alice")))
+            .limit(1)
+            .send()
+            .await
+            .expect("Failed to find entity");
+
+        pin_mut!(stream);
+
+        let found_entity = stream
+            .next()
+            .await
+            .expect("Failed to get next entity")
             .expect("Entity not found");
 
         assert_eq!(found_entity, entity);

@@ -1,5 +1,9 @@
-use juniper::{graphql_object, Executor, ScalarValue};
-use sdk::mapping::{query_utils::prop_filter, triple, Query};
+use futures::TryStreamExt;
+use juniper::{graphql_object, Executor, FieldResult, ScalarValue};
+use sdk::mapping::{
+    query_utils::{prop_filter, QueryStream},
+    triple,
+};
 
 use crate::context::KnowledgeGraph;
 
@@ -40,17 +44,16 @@ impl EntityVersion {
         &self,
         _filter: Option<AttributeFilter>,
         executor: &'_ Executor<'_, '_, KnowledgeGraph, S>,
-    ) -> Vec<Triple> {
+    ) -> FieldResult<Vec<Triple>> {
         let query = triple::find_many(&executor.context().0)
             .entity_id(prop_filter::value(&self.entity_id))
             .space_version(&self.index);
 
-        query
+        Ok(query
             .send()
-            .await
-            .expect("Failed to get attributes")
-            .into_iter()
-            .map(|triple| Triple::new(triple, self.space_id.clone(), Some(self.index.clone())))
-            .collect()
+            .await?
+            .map_ok(|triple| Triple::new(triple, self.space_id.clone(), Some(self.index.clone())))
+            .try_collect::<Vec<_>>()
+            .await?)
     }
 }

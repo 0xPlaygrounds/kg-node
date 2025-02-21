@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use futures::{stream, StreamExt, TryStreamExt};
 use ipfs::deserialize;
 use sdk::{
@@ -178,54 +176,52 @@ impl EventHandler {
         self.create_edit_relations(block, edit_medatata, &edit.space_id, &proposal_id)
             .await?;
 
-        // Group ops by entity and type
-        let entity_ops = EntityOps::from_ops(edit.ops);
+        // Group ops by type
+        let op_groups = OpGroups::from_ops(edit.ops);
 
-        for (_, op_groups) in entity_ops.0 {
-            // Handle SET_TRIPLE ops
-            triple::insert_many(&self.neo4j, block, &edit.space_id, &version_index)
-                .triples(
-                    op_groups
-                        .set_triples
-                        .into_iter()
-                        .map(|triple| triple.try_into().expect("Failed to convert triple")),
-                )
-                .send()
-                .await?;
+        // Handle SET_TRIPLE ops
+        triple::insert_many(&self.neo4j, block, &edit.space_id, &version_index)
+            .triples(
+                op_groups
+                    .set_triples
+                    .into_iter()
+                    .map(|triple| triple.try_into().expect("Failed to convert triple")),
+            )
+            .send()
+            .await?;
 
-            // Handle DELETE_TRIPLE ops
-            triple::delete_many(&self.neo4j, block, &edit.space_id, &version_index)
-                .triples(
-                    op_groups
-                        .delete_triples
-                        .into_iter()
-                        .map(|triple| (triple.entity, triple.attribute)),
-                )
-                .send()
-                .await?;
+        // Handle DELETE_TRIPLE ops
+        triple::delete_many(&self.neo4j, block, &edit.space_id, &version_index)
+            .triples(
+                op_groups
+                    .delete_triples
+                    .into_iter()
+                    .map(|triple| (triple.entity, triple.attribute)),
+            )
+            .send()
+            .await?;
 
-            // Handle CREATE_RELATION ops
-            relation_node::insert_many(&self.neo4j, block, &edit.space_id, &version_index)
-                .relations(
-                    op_groups
-                        .create_relations
-                        .into_iter()
-                        .map(|relation| relation.into()),
-                )
-                .send()
-                .await?;
+        // Handle CREATE_RELATION ops
+        relation_node::insert_many(&self.neo4j, block, &edit.space_id, &version_index)
+            .relations(
+                op_groups
+                    .create_relations
+                    .into_iter()
+                    .map(|relation| relation.into()),
+            )
+            .send()
+            .await?;
 
-            // Handle DELETE_RELATION ops
-            relation_node::delete_many(&self.neo4j, block, &edit.space_id, &version_index)
-                .relations(
-                    op_groups
-                        .delete_relations
-                        .into_iter()
-                        .map(|relation| relation.id),
-                )
-                .send()
-                .await?;
-        }
+        // Handle DELETE_RELATION ops
+        relation_node::delete_many(&self.neo4j, block, &edit.space_id, &version_index)
+            .relations(
+                op_groups
+                    .delete_relations
+                    .into_iter()
+                    .map(|relation| relation.id),
+            )
+            .send()
+            .await?;
 
         Ok(())
     }
@@ -280,11 +276,9 @@ pub struct OpGroups {
     delete_relations: Vec<pb::ipfs::Relation>,
 }
 
-pub struct EntityOps(HashMap<String, OpGroups>);
-
-impl EntityOps {
+impl OpGroups {
     pub fn from_ops(ops: impl IntoIterator<Item = pb::ipfs::Op>) -> Self {
-        let mut entity_ops = HashMap::new();
+        let mut op_groups = Self::default();
 
         for op in ops {
             match (op.r#type(), op) {
@@ -295,11 +289,7 @@ impl EntityOps {
                         ..
                     },
                 ) => {
-                    entity_ops
-                        .entry(triple.entity.clone())
-                        .or_insert_with(OpGroups::default)
-                        .set_triples
-                        .push(triple);
+                    op_groups.set_triples.push(triple);
                 }
                 (
                     pb::ipfs::OpType::DeleteTriple,
@@ -308,11 +298,7 @@ impl EntityOps {
                         ..
                     },
                 ) => {
-                    entity_ops
-                        .entry(triple.entity.clone())
-                        .or_insert_with(OpGroups::default)
-                        .delete_triples
-                        .push(triple);
+                    op_groups.delete_triples.push(triple);
                 }
 
                 (
@@ -322,11 +308,7 @@ impl EntityOps {
                         ..
                     },
                 ) => {
-                    entity_ops
-                        .entry(relation.id.clone())
-                        .or_insert_with(OpGroups::default)
-                        .create_relations
-                        .push(relation);
+                    op_groups.create_relations.push(relation);
                 }
                 (
                     pb::ipfs::OpType::DeleteRelation,
@@ -335,11 +317,7 @@ impl EntityOps {
                         ..
                     },
                 ) => {
-                    entity_ops
-                        .entry(relation.id.clone())
-                        .or_insert_with(OpGroups::default)
-                        .delete_relations
-                        .push(relation);
+                    op_groups.delete_relations.push(relation);
                 }
 
                 (typ, maybe_triple) => {
@@ -348,6 +326,6 @@ impl EntityOps {
             }
         }
 
-        Self(entity_ops)
+        op_groups
     }
 }

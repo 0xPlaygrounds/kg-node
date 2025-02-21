@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct QueryPart {
@@ -203,11 +203,27 @@ impl QueryPart {
 
     pub fn build(self) -> neo4rs::Query {
         let query_str = self.query();
-        self.params
+        self.get_params()
             .into_iter()
             .fold(neo4rs::query(&query_str), |query, (key, value)| {
-                query.param(&key, value)
+                query.param(key, value.clone())
             })
+    }
+
+    pub fn get_params(&self) -> Vec<(&String, &neo4rs::BoltType)> {
+        if let Some((_, other)) = &self.with_clauses {
+            let mut params = self.params.iter().collect::<Vec<_>>();
+            params.extend(other.get_params());
+            params
+        } else {
+            self.params.iter().collect()
+        }
+    }
+}
+
+impl Display for QueryPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\n{:?}", self.query(), self.params)
     }
 }
 

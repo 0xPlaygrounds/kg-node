@@ -1,13 +1,14 @@
 use std::collections::{hash_map, HashMap};
 
+use futures::{Stream, StreamExt, TryStreamExt};
 use neo4rs::{BoltList, BoltMap, BoltType};
 use serde::Deserialize;
 
 use crate::{error::DatabaseError, indexer_ids, models::BlockMetadata};
 
 use super::{
-    query_utils::{query_part, Query, QueryPart, VersionFilter},
-    AttributeNode, Triple, TriplesConversionError, Value,
+    query_utils::{query_part, Query, QueryPart, QueryStream, VersionFilter},
+    AttributeFilter, AttributeNode, PropFilter, Triple, TriplesConversionError, Value,
 };
 
 /// Group of attributes belonging to the same entity.
@@ -151,6 +152,10 @@ pub fn find_one(
     space_version: Option<String>,
 ) -> FindOneQuery {
     FindOneQuery::new(neo4j, entity_id.into(), space_id.into(), space_version)
+}
+
+pub fn find_many(neo4j: &neo4rs::Graph) -> FindManyQuery {
+    FindManyQuery::new(neo4j)
 }
 
 pub fn insert_many(
@@ -413,7 +418,13 @@ where
 {
     async fn send(self) -> Result<Option<T>, DatabaseError> {
         let neo4j = self.neo4j.clone();
-        let query = self.into_query_part().build();
+        let query = if cfg!(debug_assertions) {
+            let query_part = self.into_query_part();
+            tracing::info!("attributes::FindOneQuery:\n{}", query_part);
+            query_part.build()
+        } else {
+            self.into_query_part().build()
+        };
 
         #[derive(Debug, Deserialize)]
         struct RowResult {
@@ -434,6 +445,110 @@ where
         Ok(result
             .map(|attrs| T::from_attributes(attrs.into()))
             .transpose()?)
+    }
+}
+
+pub struct FindManyQuery {
+    neo4j: neo4rs::Graph,
+    id: Option<PropFilter<String>>,
+    attributes: Vec<AttributeFilter>,
+
+    space_id: Option<PropFilter<String>>,
+    version: VersionFilter,
+}
+
+impl FindManyQuery {
+    fn new(neo4j: &neo4rs::Graph) -> Self {
+        Self {
+            neo4j: neo4j.clone(),
+            id: None,
+            attributes: vec![],
+            space_id: None,
+            version: VersionFilter::default(),
+        }
+    }
+
+    pub fn id(mut self, id: impl Into<PropFilter<String>>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn attribute(mut self, attribute: AttributeFilter) -> Self {
+        self.attributes.push(attribute);
+        self
+    }
+
+    pub fn attribute_mut(&mut self, attribute: AttributeFilter) {
+        self.attributes.push(attribute);
+    }
+
+    pub fn attributes(mut self, attributes: impl IntoIterator<Item = AttributeFilter>) -> Self {
+        self.attributes.extend(attributes);
+        self
+    }
+
+    pub fn attributes_mut(&mut self, attributes: impl IntoIterator<Item = AttributeFilter>) {
+        self.attributes.extend(attributes);
+    }
+
+    pub fn space_id(mut self, space_id: impl Into<PropFilter<String>>) -> Self {
+        self.space_id = Some(space_id.into());
+        self
+    }
+
+    pub fn version(mut self, version: impl Into<String>) -> Self {
+        self.version.version_mut(version.into());
+        self
+    }
+
+    pub(crate) fn into_query_part(self) -> QueryPart {
+        let mut query = QueryPart::default()
+            .match_clause("(e:Entity) -[r:ATTRIBUTE]-> (n:Attribute)")
+            .merge(self.version.into_query_part("r"))
+            .with_clause(
+                "e, collect(n{.*}) AS attrs",
+                query_part::return_query("e{.id, attributes: attrs}"),
+            );
+
+        if let Some(id) = self.id {
+            query = query.merge(id.into_query_part("e", "id"));
+        }
+
+        if let Some(space_id) = self.space_id {
+            query = query.merge(space_id.into_query_part("r", "space_id"));
+        }
+
+        query
+    }
+}
+
+impl<T> QueryStream<T> for FindManyQuery
+where
+    T: FromAttributes,
+{
+    async fn send(self) -> Result<impl Stream<Item = Result<T, DatabaseError>>, DatabaseError> {
+        let neo4j = self.neo4j.clone();
+        let query = self.into_query_part().build();
+
+        #[derive(Debug, Deserialize)]
+        struct RowResult {
+            #[serde(rename = "id")]
+            _id: String,
+            attributes: Vec<AttributeNode>,
+        }
+
+        let stream = neo4j
+            .execute(query)
+            .await?
+            .into_stream_as::<RowResult>()
+            .map_err(DatabaseError::from)
+            .map(|attrs| {
+                attrs.and_then(|attrs| {
+                    T::from_attributes(attrs.attributes.into()).map_err(DatabaseError::from)
+                })
+            });
+
+        Ok(stream)
     }
 }
 
@@ -557,10 +672,11 @@ impl<'a> Iterator for Iter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mapping::{self, entity, Entity};
+    use crate::mapping::{self, entity, prop_filter, Entity};
 
     use super::*;
 
+    use futures::pin_mut;
     use testcontainers::{
         core::{IntoContainerPort, WaitFor},
         runners::AsyncRunner,
@@ -644,6 +760,69 @@ mod tests {
             .send()
             .await
             .expect("Failed to find triple set")
+            .expect("Triple set not found");
+
+        assert_eq!(attributes, result);
+    }
+
+    #[tokio::test]
+    async fn test_attributes_insert_find_many() {
+        // Setup a local Neo 4J container for testing. NOTE: docker service must be running.
+        let container = GenericImage::new("neo4j", "2025.01.0-community")
+            .with_wait_for(WaitFor::Duration {
+                length: std::time::Duration::from_secs(5),
+            })
+            .with_exposed_port(BOLT_PORT.tcp())
+            .with_exposed_port(HTTP_PORT.tcp())
+            .with_env_var("NEO4J_AUTH", "none")
+            .start()
+            .await
+            .expect("Failed to start Neo 4J container");
+
+        let port = container.get_host_port_ipv4(BOLT_PORT).await.unwrap();
+        let host = container.get_host().await.unwrap().to_string();
+
+        let neo4j = neo4rs::Graph::new(format!("neo4j://{host}:{port}"), "user", "password")
+            .await
+            .unwrap();
+
+        let attributes = Attributes::from(vec![
+            AttributeNode {
+                id: "bar".to_string(),
+                value: 123u64.into(),
+            },
+            AttributeNode {
+                id: "foo".to_string(),
+                value: "hello".into(),
+            },
+        ]);
+
+        attributes
+            .clone()
+            .insert(
+                &neo4j,
+                &BlockMetadata::default(),
+                "abc".to_string(),
+                "space_id".to_string(),
+                "0",
+            )
+            .send()
+            .await
+            .expect("Failed to insert triple set");
+
+        let stream = find_many(&neo4j)
+            .id(prop_filter::value("abc"))
+            .space_id(prop_filter::value("space_id"))
+            .send()
+            .await
+            .expect("Failed to find triple set");
+
+        pin_mut!(stream);
+
+        let result = stream
+            .next()
+            .await
+            .expect("Triple set not found")
             .expect("Triple set not found");
 
         assert_eq!(attributes, result);

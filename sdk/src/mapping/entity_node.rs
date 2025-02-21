@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use futures::stream::TryStreamExt;
+use futures::{stream::TryStreamExt, Stream};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ use super::{
     attributes, entity_version,
     query_utils::{
         edge_filter::EdgeFilter, order_by::FieldOrderBy, prop_filter, AttributeFilter, PropFilter,
-        Query, QueryPart,
+        Query, QueryPart, QueryStream,
     },
     relation_node, triple, AttributeNode, Triple,
 };
@@ -288,8 +288,10 @@ impl FindManyQuery {
     }
 }
 
-impl Query<Vec<EntityNode>> for FindManyQuery {
-    async fn send(self) -> Result<Vec<EntityNode>, DatabaseError> {
+impl QueryStream<EntityNode> for FindManyQuery {
+    async fn send(
+        self,
+    ) -> Result<impl Stream<Item = Result<EntityNode, DatabaseError>>, DatabaseError> {
         let neo4j = self.neo4j.clone();
 
         let query = if cfg!(debug_assertions) {
@@ -305,14 +307,12 @@ impl Query<Vec<EntityNode>> for FindManyQuery {
             e: EntityNode,
         }
 
-        neo4j
+        Ok(neo4j
             .execute(query)
             .await?
             .into_stream_as::<RowResult>()
             .map_err(DatabaseError::from)
-            .and_then(|row| async move { Ok(row.e) })
-            .try_collect::<Vec<_>>()
-            .await
+            .and_then(|row| async move { Ok(row.e) }))
     }
 }
 

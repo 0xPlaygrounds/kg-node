@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use neo4rs::{BoltMap, BoltType};
 use serde::Deserialize;
 
 use crate::{error::DatabaseError, indexer_ids, models::BlockMetadata, pb};
 
 use super::{
-    query_utils::{PropFilter, Query, QueryPart, VersionFilter},
+    query_utils::{PropFilter, Query, QueryPart, QueryStream, VersionFilter},
     Value,
 };
 
@@ -443,8 +443,10 @@ impl FindManyQuery {
     }
 }
 
-impl Query<Vec<Triple>> for FindManyQuery {
-    async fn send(self) -> Result<Vec<Triple>, DatabaseError> {
+impl QueryStream<Triple> for FindManyQuery {
+    async fn send(
+        self,
+    ) -> Result<impl Stream<Item = Result<Triple, DatabaseError>>, DatabaseError> {
         let neo4j = self.neo4j.clone();
 
         let query = if cfg!(debug_assertions) {
@@ -455,14 +457,11 @@ impl Query<Vec<Triple>> for FindManyQuery {
             self.into_query_part().build()
         };
 
-        neo4j
+        Ok(neo4j
             .execute(query)
             .await?
             .into_stream_as::<Triple>()
-            .map_err(DatabaseError::from)
-            // .and_then(|row| async move { Ok(row.triple) })
-            .try_collect::<Vec<Triple>>()
-            .await
+            .map_err(DatabaseError::from))
     }
 }
 
@@ -767,7 +766,10 @@ mod tests {
             .space_version("0")
             .send()
             .await
-            .expect("Failed to find triples");
+            .expect("Failed to find triples")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect triples");
 
         assert_eq!(vec![triple], found_triples);
     }
@@ -828,7 +830,10 @@ mod tests {
             .space_version("0")
             .send()
             .await
-            .expect("Failed to find triples");
+            .expect("Failed to find triples")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect triples");
 
         assert_eq!(vec![triple], found_triples);
     }

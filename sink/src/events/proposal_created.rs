@@ -21,7 +21,7 @@ impl EventHandler {
         add_member_proposal: &geo::AddMemberProposalCreated,
         block: &BlockMetadata,
     ) -> Result<(), HandlerError> {
-        let space_id = Space::generate_id(network_ids::GEO, &add_member_proposal.dao_address);
+        let space_id = Space::gen_id(network_ids::GEO, &add_member_proposal.dao_address);
         let creator_id = Account::gen_id(&add_member_proposal.creator);
         let proposed_account_id = Account::gen_id(&add_member_proposal.member);
 
@@ -51,7 +51,7 @@ impl EventHandler {
         remove_member_proposal: &geo::RemoveMemberProposalCreated,
         block: &BlockMetadata,
     ) -> Result<(), HandlerError> {
-        let space_id = Space::generate_id(network_ids::GEO, &remove_member_proposal.dao_address);
+        let space_id = Space::gen_id(network_ids::GEO, &remove_member_proposal.dao_address);
         let creator_id = Account::gen_id(&remove_member_proposal.creator);
         let proposed_account_id = Account::gen_id(&remove_member_proposal.member);
 
@@ -81,7 +81,7 @@ impl EventHandler {
         add_editor_proposal: &geo::AddEditorProposalCreated,
         block: &BlockMetadata,
     ) -> Result<(), HandlerError> {
-        let space_id = Space::generate_id(network_ids::GEO, &add_editor_proposal.dao_address);
+        let space_id = Space::gen_id(network_ids::GEO, &add_editor_proposal.dao_address);
         let creator_id = Account::gen_id(&add_editor_proposal.creator);
         let proposed_account_id = Account::gen_id(&add_editor_proposal.editor);
 
@@ -111,7 +111,7 @@ impl EventHandler {
         remove_editor_proposal: &geo::RemoveEditorProposalCreated,
         block: &BlockMetadata,
     ) -> Result<(), HandlerError> {
-        let space_id = Space::generate_id(network_ids::GEO, &remove_editor_proposal.dao_address);
+        let space_id = Space::gen_id(network_ids::GEO, &remove_editor_proposal.dao_address);
         let creator_id = Account::gen_id(&remove_editor_proposal.creator);
         let proposed_account_id = Account::gen_id(&remove_editor_proposal.editor);
 
@@ -141,10 +141,9 @@ impl EventHandler {
         add_subspace_proposal: &geo::AddSubspaceProposalCreated,
         block: &BlockMetadata,
     ) -> Result<(), HandlerError> {
-        let space_id = Space::generate_id(network_ids::GEO, &add_subspace_proposal.dao_address);
+        let space_id = Space::gen_id(network_ids::GEO, &add_subspace_proposal.dao_address);
         let creator_id = Account::gen_id(&add_subspace_proposal.creator);
-        let proposed_subspace_id =
-            Space::generate_id(network_ids::GEO, &add_subspace_proposal.subspace);
+        let proposed_subspace_id = Space::gen_id(network_ids::GEO, &add_subspace_proposal.subspace);
 
         // Create proposal
         let proposal = AddSubspaceProposal::new(Proposal {
@@ -172,10 +171,10 @@ impl EventHandler {
         remove_subspace_proposal: &geo::RemoveSubspaceProposalCreated,
         block: &BlockMetadata,
     ) -> Result<(), HandlerError> {
-        let space_id = Space::generate_id(network_ids::GEO, &remove_subspace_proposal.dao_address);
+        let space_id = Space::gen_id(network_ids::GEO, &remove_subspace_proposal.dao_address);
         let creator_id = Account::gen_id(&remove_subspace_proposal.creator);
         let proposed_subspace_id =
-            Space::generate_id(network_ids::GEO, &remove_subspace_proposal.subspace);
+            Space::gen_id(network_ids::GEO, &remove_subspace_proposal.subspace);
 
         // Create proposal
         let proposal = RemoveSubspaceProposal::new(Proposal {
@@ -203,7 +202,7 @@ impl EventHandler {
         publish_edit_proposal: &geo::PublishEditProposalCreated,
         block: &BlockMetadata,
     ) -> Result<(), HandlerError> {
-        let space_id = Space::generate_id(network_ids::GEO, &publish_edit_proposal.dao_address);
+        let space_id = Space::gen_id(network_ids::GEO, &publish_edit_proposal.dao_address);
         let creator_id = Account::gen_id(&publish_edit_proposal.creator);
 
         let proposal = EditProposal::new(

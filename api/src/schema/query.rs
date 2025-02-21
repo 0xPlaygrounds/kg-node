@@ -1,6 +1,7 @@
+use futures::TryStreamExt;
 use juniper::{graphql_object, Executor, FieldResult, ScalarValue};
 
-use sdk::mapping::{self, entity_node, relation_node, Query as _};
+use sdk::mapping::{self, entity_node, query_utils::QueryStream, relation_node};
 
 use crate::{
     context::KnowledgeGraph,
@@ -76,9 +77,9 @@ impl Query {
         Ok(query
             .send()
             .await?
-            .into_iter()
-            .map(|entity| Entity::new(entity, space_id.clone(), None))
-            .collect::<Vec<_>>())
+            .map_ok(|entity| Entity::new(entity, space_id.clone(), None))
+            .try_collect::<Vec<_>>()
+            .await?)
     }
 
     /// Returns a single relation identified by its ID and space ID
@@ -131,8 +132,8 @@ impl Query {
         Ok(query
             .send()
             .await?
-            .into_iter()
-            .map(|relation| Relation::new(relation, space_id.clone(), None))
-            .collect())
+            .map_ok(|relation| Relation::new(relation, space_id.clone(), None))
+            .try_collect::<Vec<_>>()
+            .await?)
     }
 }
