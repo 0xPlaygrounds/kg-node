@@ -104,9 +104,10 @@ impl AttributeFilter {
     pub fn subquery(&self, node_var: &str) -> MatchQuery {
         let attr_rel_var = format!("r_{node_var}_{}", self.attribute);
         let attr_node_var = format!("{node_var}_{}", self.attribute);
+        let attr_id_var = format!("a_{node_var}_{}", self.attribute);
 
         MatchQuery::new(
-            format!("({node_var}) -[{attr_rel_var}:ATTRIBUTE]-> ({attr_node_var}:Attribute {{id: $attribute}})")
+            format!("({node_var}) -[{attr_rel_var}:ATTRIBUTE]-> ({attr_node_var}:Attribute {{id: ${attr_id_var}}})")
         )
             .r#where(self.version.subquery(&attr_rel_var))
             .where_opt(
@@ -118,6 +119,6 @@ impl AttributeFilter {
             .where_opt(
                 self.value_type.as_ref().map(|value_type| value_type.subquery(&attr_node_var, "value_type", None))
             )
-            .params("attribute", self.attribute.clone())
+            .params(attr_id_var, self.attribute.clone())
     }
 }

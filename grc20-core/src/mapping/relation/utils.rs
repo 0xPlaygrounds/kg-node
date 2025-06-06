@@ -85,6 +85,6 @@ impl<'a> MatchOneRelation<'a> {
             .subquery(format!("ORDER BY {edge_var}.index"))
             .params("id", self.id)
             .params("space_id", self.space_id)
-            .with(vec![from_node_var, edge_var, to_node_var], next)
+            .with(vec![from_node_var, edge_var.to_string(), to_node_var], next)
     }
 }

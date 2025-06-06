@@ -72,13 +72,18 @@ async fn main() -> anyhow::Result<()> {
         .await
         .expect("Failed to connect to Neo4j");
 
+    let embedding_model = TextEmbedding::try_new(
+        InitOptions::new(EMBEDDING_MODEL).with_show_download_progress(true),
+    )?;
+
     // Reset and bootstrap the database
     reset_db(&neo4j).await?;
-    bootstrap(&neo4j).await?;
+    bootstrap(&neo4j, &embedding_model).await?;
 
     // Create some common types
     create_type(
         &neo4j,
+        &embedding_model,
         "Person",
         [],
         [
@@ -91,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_type(
         &neo4j,
+        &embedding_model,
         "Event",
         [],
         [
@@ -103,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_type(
         &neo4j,
+        &embedding_model,
         "City",
         [],
         [
@@ -115,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_property(
         &neo4j,
+        &embedding_model,
         "Event location",
         system_ids::RELATION_SCHEMA_TYPE,
         Some(CITY_TYPE),
@@ -124,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_property(
         &neo4j,
+        &embedding_model,
         "Speakers",
         system_ids::RELATION_SCHEMA_TYPE,
         Some(system_ids::PERSON_TYPE),
@@ -133,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_property(
         &neo4j,
+        &embedding_model,
         "Side events",
         system_ids::RELATION_SCHEMA_TYPE,
         Some(EVENT_TYPE),
@@ -143,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
     // Create person entities
     create_entity(
         &neo4j,
+        &embedding_model,
         "Alice",
         None,
         [system_ids::PERSON_TYPE],
@@ -160,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "Bob",
         None,
         [system_ids::PERSON_TYPE],
@@ -171,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "Carol",
         None,
         [system_ids::PERSON_TYPE],
@@ -182,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "Dave",
         None,
         [system_ids::PERSON_TYPE],
@@ -193,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "Joe",
         None,
         [system_ids::PERSON_TYPE],
@@ -204,6 +219,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "Chris",
         None,
         [system_ids::PERSON_TYPE],
@@ -216,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
     // Create city entities
     create_entity(
         &neo4j,
+        &embedding_model,
         "San Francisco",
         Some("City in California"),
         [CITY_TYPE],
@@ -227,6 +244,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "New York",
         Some("City in New York State"),
         [CITY_TYPE],
@@ -240,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
     // Create side event entities for RustConf 2023
     create_entity(
         &neo4j,
+        &embedding_model,
         "Rust Async Workshop",
         Some("A hands-on workshop about async programming in Rust"),
         [EVENT_TYPE],
@@ -254,6 +273,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "RustConf Hackathon",
         Some("A hackathon for RustConf 2023 attendees"),
         [EVENT_TYPE],
@@ -268,6 +288,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "Rust Conference 2023",
         Some("A conference about Rust programming language"),
         [EVENT_TYPE],
@@ -285,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
 
     create_entity(
         &neo4j,
+        &embedding_model,
         "JavaScript Summit 2024",
         Some("A summit for JavaScript enthusiasts and professionals"),
         [EVENT_TYPE],
@@ -301,11 +323,10 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
-    let embedding_model = TextEmbedding::try_new(
-        InitOptions::new(EMBEDDING_MODEL).with_show_download_progress(true),
-    )?;
-
+pub async fn bootstrap(
+    neo4j: &neo4rs::Graph,
+    embedding_model: &TextEmbedding,
+) -> anyhow::Result<()> {
     let triples = vec![
         // Value types
         Triple::new(system_ids::CHECKBOX, system_ids::NAME_ATTRIBUTE, "Checkbox"),
@@ -401,6 +422,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
     // Create properties
     create_property(
         neo4j,
+        &embedding_model,
         "Properties",
         system_ids::RELATION_SCHEMA_TYPE,
         Some(system_ids::ATTRIBUTE),
@@ -410,6 +432,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_property(
         neo4j,
+        &embedding_model,
         "Types",
         system_ids::RELATION_SCHEMA_TYPE,
         Some(system_ids::SCHEMA_TYPE),
@@ -419,6 +442,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_property(
         neo4j,
+        &embedding_model,
         "Value Type",
         system_ids::RELATION_SCHEMA_TYPE,
         None::<&str>,
@@ -428,6 +452,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_property(
         neo4j,
+        &embedding_model,
         "Relation type attribute",
         system_ids::RELATION_SCHEMA_TYPE,
         None::<&str>,
@@ -437,6 +462,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_property(
         neo4j,
+        &embedding_model,
         "Relation index",
         system_ids::TEXT,
         None::<&str>,
@@ -446,6 +472,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_property(
         neo4j,
+        &embedding_model,
         "Relation value type",
         system_ids::RELATION_SCHEMA_TYPE,
         Some(system_ids::SCHEMA_TYPE),
@@ -455,6 +482,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_property(
         neo4j,
+        &embedding_model,
         "Name",
         system_ids::TEXT,
         None::<&str>,
@@ -464,6 +492,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_property(
         neo4j,
+        &embedding_model,
         "Description",
         system_ids::TEXT,
         None::<&str>,
@@ -474,6 +503,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
     // Create types
     create_type(
         neo4j,
+        &embedding_model,
         "Type",
         [system_ids::SCHEMA_TYPE],
         [
@@ -488,6 +518,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_type(
         neo4j,
+        &embedding_model,
         "Relation schema type",
         [system_ids::RELATION_SCHEMA_TYPE],
         [system_ids::RELATION_VALUE_RELATIONSHIP_TYPE],
@@ -497,6 +528,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_type(
         neo4j,
+        &embedding_model,
         "Attribute",
         [system_ids::SCHEMA_TYPE],
         [
@@ -510,6 +542,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
     create_type(
         neo4j,
+        &embedding_model,
         "Relation instance type",
         [system_ids::RELATION_TYPE],
         [
@@ -525,6 +558,7 @@ pub async fn bootstrap(neo4j: &neo4rs::Graph) -> anyhow::Result<()> {
 
 pub async fn create_entity(
     neo4j: &neo4rs::Graph,
+    embedding_model: &TextEmbedding,
     name: impl Into<String>,
     description: Option<&str>,
     types: impl IntoIterator<Item = &str>,
@@ -538,10 +572,18 @@ pub async fn create_entity(
 
     // Set: Entity.name
     triple::insert_many(neo4j, &block, system_ids::ROOT_SPACE_ID, DEFAULT_VERSION)
-        .triples(vec![Triple::new(
+        .triples(vec![Triple::with_embedding(
             &entity_id,
             system_ids::NAME_ATTRIBUTE,
-            name,
+            name.clone(),
+            embedding_model
+                .embed(vec![name], Some(1))
+                .unwrap_or(vec![Vec::<f32>::new()])
+                .get(0)
+                .unwrap_or(&Vec::<f32>::new())
+                .iter()
+                .map(|&x| x as f64)
+                .collect(),
         )])
         .send()
         .await?;
@@ -596,6 +638,7 @@ pub async fn create_entity(
 /// Creates a type with the given name, types, and properties.
 pub async fn create_type(
     neo4j: &neo4rs::Graph,
+    embedding_model: &TextEmbedding,
     name: impl Into<String>,
     types: impl IntoIterator<Item = &str>,
     properties: impl IntoIterator<Item = &str>,
@@ -612,10 +655,18 @@ pub async fn create_type(
 
     // Set: Type.name
     triple::insert_many(neo4j, &block, system_ids::ROOT_SPACE_TYPE, DEFAULT_VERSION)
-        .triples(vec![Triple::new(
+        .triples(vec![Triple::with_embedding(
             &type_id,
             system_ids::NAME_ATTRIBUTE,
-            name,
+            name.clone(),
+            embedding_model
+                .embed(vec![name], Some(1))
+                .unwrap_or(vec![Vec::<f32>::new()])
+                .get(0)
+                .unwrap_or(&Vec::<f32>::new())
+                .iter()
+                .map(|&x| x as f64)
+                .collect(),
         )])
         .send()
         .await?;
@@ -650,6 +701,7 @@ pub async fn create_type(
 /// Note: if that is the case, then `value_type` should be the system_ids::RELATION_SCHEMA_TYPE type).
 pub async fn create_property(
     neo4j: &neo4rs::Graph,
+    embedding_model: &TextEmbedding,
     name: impl Into<String>,
     value_type: impl Into<String>,
     relation_value_type: Option<impl Into<String>>,
@@ -658,13 +710,22 @@ pub async fn create_property(
     let block = BlockMetadata::default();
 
     let property_id = id.map(Into::into).unwrap_or_else(|| ids::create_geo_id());
+    let string_name = name.into();
 
     // Set: Property.name
     triple::insert_many(neo4j, &block, system_ids::ROOT_SPACE_ID, DEFAULT_VERSION)
-        .triples(vec![Triple::new(
+        .triples(vec![Triple::with_embedding(
             &property_id,
             system_ids::NAME_ATTRIBUTE,
-            name.into(),
+            string_name.clone(),
+            embedding_model
+                .embed(vec![string_name], Some(1))
+                .unwrap_or(vec![Vec::<f32>::new()])
+                .get(0)
+                .unwrap_or(&Vec::<f32>::new())
+                .iter()
+                .map(|&x| x as f64)
+                .collect(),
         )])
         .send()
         .await?;

@@ -1,6 +1,7 @@
 **/target
 **/ipfs-cache
 **/data
+**/sample_data
 *.json
 .env
 **/.fastembed_cache
