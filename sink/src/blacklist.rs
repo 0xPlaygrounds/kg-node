@@ -1,10 +1,11 @@
 use serde::Deserialize;
+use uuid::Uuid;
 
 const SPACE_BLACKLIST_FILE: &str = "spaces_blacklist.yaml";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SpacesBlacklist {
-    pub spaces: Vec<String>,
+    pub spaces: Vec<Uuid>,
 }
 
 pub fn load() -> anyhow::Result<Option<SpacesBlacklist>> {

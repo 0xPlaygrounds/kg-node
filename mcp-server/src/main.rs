@@ -1,16 +1,17 @@
 use clap::{Args, Parser};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use futures::{TryStreamExt, future::join_all};
+use futures::{StreamExt, TryStreamExt, future::join_all, stream};
 use grc20_core::{
     entity::{
-        self, Entity, EntityFilter, EntityNode, EntityRelationFilter, utils::TraverseRelation,
+        self, Entity, EntityFilter, EntityRelationFilter,
+        utils::{RelationTraversal, TypesFilter},
     },
-    mapping::{
-        Query, QueryStream, RelationEdge, prop_filter, query_utils::RelationDirection, triple,
-    },
-    neo4rs, relation, system_ids,
+    mapping::query_utils::value_filter,
+    neo4rs, property,
+    relation::{self, RelationDirection, models::Relation},
+    system_ids,
 };
-use grc20_sdk::models::BaseEntity;
+// use grc20_sdk::models::BaseEntity;
 use mcp_server::input_types::{self, SearchTraversalInputFilter};
 use rmcp::{
     Error as McpError, RoleServer, ServerHandler,
@@ -19,13 +20,19 @@ use rmcp::{
     tool,
     transport::sse_server::{SseServer, SseServerConfig},
 };
-use serde_json::{Value, json};
-use std::{collections::HashSet, sync::Arc, time::Instant, vec};
+use serde_json::json;
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    sync::Arc,
+    time::Instant,
+};
 use tracing_subscriber::{
     layer::SubscriberExt,
     util::SubscriberInitExt,
     {self},
 };
+use uuid::Uuid;
 
 const BIND_ADDRESS: &str = "0.0.0.0:8080";
 
@@ -34,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "debug".to_string().into()),
+                .unwrap_or_else(|_| "info".to_string().into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -109,6 +116,76 @@ impl KnowledgeGraph {
         RawResource::new(uri, name.to_string()).no_annotation()
     }
 
+    fn embed_query(&self, query: &str) -> Result<Vec<f64>, McpError> {
+        self.embedding_model
+            .embed(vec![query], None)
+            .map_err(|e| {
+                McpError::internal_error(
+                    "embedding_failed",
+                    Some(json!({ "error": e.to_string() })),
+                )
+            })?
+            .pop()
+            .ok_or_else(|| {
+                McpError::internal_error(
+                    "embedding_failed",
+                    Some(json!({ "error": "Embedding is empty" })),
+                )
+            })
+            .map(|embedding| embedding.into_iter().map(|v| v as f64).collect::<Vec<_>>())
+    }
+
+    async fn search(
+        &self,
+        query: String,
+        limit: Option<usize>,
+    ) -> Result<Vec<entity::SemanticSearchResult>, McpError> {
+        let embedding = self
+            .embedding_model
+            .embed(vec![&query], None)
+            .expect("Failed to get embedding")
+            .pop()
+            .expect("Embedding is empty")
+            .into_iter()
+            .map(|v| v as f64)
+            .collect::<Vec<_>>();
+
+        let limit = limit.unwrap_or(10);
+
+        let semantic_search_triples = entity::search(&self.neo4j, embedding)
+            .limit(limit)
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        Ok(semantic_search_triples)
+    }
+
+    async fn format_entity(&self, entity: Entity) -> Result<serde_json::Value, McpError> {
+        let properties = entity
+            .get_properties(&self.neo4j)
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .map_ok(|prop| (prop.id, prop))
+            .try_collect::<HashMap<_, _>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        Ok(json!({
+            "entity_id": entity.id,
+            "properties": entity.flattened_properties().into_iter()
+                .map(|(prop_id, values)| json!({
+                    "name": properties.get(&prop_id).map(|e| e.names().join(",")).unwrap_or("UNKNOWN".to_string()),
+                    "values": values.into_iter().map(|v| v.value).collect::<Vec<_>>()
+                }))
+                .collect::<Vec<_>>()
+        }))
+    }
+
     #[tool(description = include_str!("../resources/search_type_description.md"))]
     async fn search_types(
         &self,
@@ -116,20 +193,22 @@ impl KnowledgeGraph {
         #[schemars(description = "The query string to search for types")]
         query: String,
     ) -> Result<CallToolResult, McpError> {
-        let filter_type = EntityFilter::default().relations(
-            EntityRelationFilter::default()
-                .relation_type(prop_filter::value(system_ids::TYPES_ATTRIBUTE))
-                .to_id(prop_filter::value(system_ids::SCHEMA_TYPE)),
-        );
+        let vector = self.embed_query(&query)?;
 
-        let search_ids = self
-            .query_search(query, None, filter_type)
+        let types = entity::exact_search(&self.neo4j, vector)
+            .filter(TypesFilter::default().r#type(system_ids::SCHEMA_TYPE))
+            .limit(10)
+            .send()
             .await
-            .unwrap_or_default();
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
 
         Ok(CallToolResult::success(
-            join_all(search_ids.into_iter().map(|id| async {
-                Content::json(self.format_from_id(id).await).expect("Failed to create JSON content")
+            join_all(types.into_iter().map(|result| async {
+                Content::json(self.format_entity(result.into_entity()).await)
+                    .expect("Failed to create JSON content")
             }))
             .await
             .to_vec(),
@@ -143,26 +222,28 @@ impl KnowledgeGraph {
         #[schemars(description = "The query string to search for relation types")]
         query: String,
     ) -> Result<CallToolResult, McpError> {
-        let filter_relation_type = EntityFilter::default().relations(
-            EntityRelationFilter::default()
-                .relation_type(prop_filter::value(system_ids::VALUE_TYPE_ATTRIBUTE))
-                .to_id(prop_filter::value(system_ids::RELATION_SCHEMA_TYPE)),
-        );
+        let vector = self.embed_query(&query)?;
 
-        let search_ids = self
-            .query_search(query, None, filter_relation_type)
+        let relation_types = entity::exact_search(&self.neo4j, vector)
+            .filter(TypesFilter::default().r#type(system_ids::PROPERTY_TYPE))
+            .data_type(property::DataType::Relation)
+            .limit(10)
+            .send()
             .await
-            .unwrap_or_default();
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
 
         Ok(CallToolResult::success(
-            join_all(search_ids.into_iter().map(|id| async {
-                Content::json(self.format_from_id(id).await).expect("Failed to create JSON content")
+            join_all(relation_types.into_iter().map(|result| async {
+                Content::json(self.format_entity(result.into_entity()).await)
+                    .expect("Failed to create JSON content")
             }))
             .await
             .to_vec(),
         ))
     }
-
     #[tool(description = include_str!("../resources/search_entity_using_ids_description.md"))]
     async fn search_entity_using_ids(
         &self,
@@ -182,16 +263,42 @@ impl KnowledgeGraph {
             .map(|v| v as f64)
             .collect::<Vec<_>>();
 
-        let traversal_filters: Vec<Result<TraverseRelation, McpError>> =
+        let traversal_filters: Vec<Result<RelationTraversal, McpError>> =
             match search_traversal_filter.traversal_filter {
-                Some(traversal_filter_input) => {
-                    join_all(traversal_filter_input.into_iter().map(|filter| async move {
-                        Ok(TraverseRelation::default()
-                            .direction(match filter.direction {
-                                input_types::RelationDirection::From => RelationDirection::From,
-                                input_types::RelationDirection::To => RelationDirection::To,
-                            })
-                            .relation_type_id(prop_filter::value(filter.relation_type)))
+                Some(traversal_filter) => {
+                    join_all(traversal_filter.into_iter().map(|filter| async move {
+                        let rel_embedding = self
+                            .embedding_model
+                            .embed(vec![&filter.relation_type], None)
+                            .expect("Failed to get embedding")
+                            .pop()
+                            .expect("Embedding is empty")
+                            .into_iter()
+                            .map(|v| v as f64)
+                            .collect::<Vec<_>>();
+
+                        let rel_results = entity::exact_search(&self.neo4j, rel_embedding)
+                            .filter(TypesFilter::default().r#type(system_ids::PROPERTY_TYPE))
+                            .data_type(property::DataType::Relation)
+                            .limit(10)
+                            .send()
+                            .await
+                            .map_err(mcp_server::error::Error::from)?
+                            .try_collect::<Vec<_>>()
+                            .await
+                            .map_err(mcp_server::error::Error::from)?;
+
+                        let relation_ids = rel_results
+                            .into_iter()
+                            .map(|sem_search| sem_search.entity_id)
+                            .collect::<Vec<_>>();
+
+                        Ok(RelationTraversal::default()
+                            // .direction(match filter.direction {
+                            //     input_types::RelationDirection::From => RelationDirection::From,
+                            //     input_types::RelationDirection::To => RelationDirection::To,
+                            // })
+                            .relation_type_id(value_filter::value_in(relation_ids)))
                     }))
                     .await
                     .to_vec()
@@ -202,45 +309,30 @@ impl KnowledgeGraph {
         let results_search = traversal_filters
             .into_iter()
             .fold(
-                entity::search_from_restictions::<Entity<BaseEntity>>(
-                    &self.neo4j,
-                    embedding.clone(),
-                ),
-                |query, result_traversal_filter: Result<_, McpError>| match result_traversal_filter
-                {
-                    Ok(traversal_filter) => {
-                        query.filter(EntityFilter::default().traverse_relation(traversal_filter))
-                    }
+                entity::search(&self.neo4j, embedding.clone()),
+                |query, result_ids: Result<_, McpError>| match result_ids {
+                    Ok(ids) => query.traversal(ids),
                     Err(_) => query,
                 },
             )
             .limit(10)
             .send()
             .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "search_properties",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?
+            .map_err(mcp_server::error::Error::from)?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "search_properties",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?;
+            .map_err(mcp_server::error::Error::from)?;
 
         Ok(CallToolResult::success(vec![
             Content::json(
                 results_search
                     .into_iter()
                     .map(|result| {
+                        let entity = result.into_entity();
                         json!({
-                            "id": result.entity.id(),
-                            "name": result.entity.attributes.name,
-                            "description": result.entity.attributes.description,
+                            "id": entity.id,
+                            "name": entity.names(),
+                            "description": entity.descriptions(),
                         })
                     })
                     .collect::<Vec<_>>(),
@@ -270,27 +362,42 @@ impl KnowledgeGraph {
 
         let start_filters = Instant::now();
 
-        let traversal_filters: Vec<Result<TraverseRelation, McpError>> =
+        let traversal_filters: Vec<Result<RelationTraversal, McpError>> =
             match search_traversal_filter.traversal_filter {
                 Some(traversal_filter_input) => {
                     join_all(traversal_filter_input.into_iter().map(|filter| async move {
-                        let filter_relation_type = EntityFilter::default().relations(
-                            EntityRelationFilter::default()
-                                .relation_type(prop_filter::value(system_ids::VALUE_TYPE_ATTRIBUTE))
-                                .to_id(prop_filter::value(system_ids::RELATION_SCHEMA_TYPE)),
-                        );
+                        let rel_embedding = self
+                            .embedding_model
+                            .embed(vec![&filter.relation_type], None)
+                            .expect("Failed to get embedding")
+                            .pop()
+                            .expect("Embedding is empty")
+                            .into_iter()
+                            .map(|v| v as f64)
+                            .collect::<Vec<_>>();
 
-                        let relation_ids = self
-                            .query_search(filter.relation_type, None, filter_relation_type)
+                        let rel_results = entity::exact_search(&self.neo4j, rel_embedding)
+                            .filter(TypesFilter::default().r#type(system_ids::PROPERTY_TYPE))
+                            .data_type(property::DataType::Relation)
+                            .limit(10)
+                            .send()
                             .await
-                            .unwrap_or_default();
+                            .map_err(mcp_server::error::Error::from)?
+                            .try_collect::<Vec<_>>()
+                            .await
+                            .map_err(mcp_server::error::Error::from)?;
 
-                        Ok(TraverseRelation::default()
-                            .direction(match filter.direction {
-                                input_types::RelationDirection::From => RelationDirection::From,
-                                input_types::RelationDirection::To => RelationDirection::To,
-                            })
-                            .relation_type_id(prop_filter::value_in(relation_ids)))
+                        let relation_ids = rel_results
+                            .into_iter()
+                            .map(|sem_search| sem_search.entity_id)
+                            .collect::<Vec<_>>();
+
+                        Ok(RelationTraversal::default()
+                            // .direction(match filter.direction {
+                            //     input_types::RelationDirection::From => RelationDirection::From,
+                            //     input_types::RelationDirection::To => RelationDirection::To,
+                            // })
+                            .relation_type_id(value_filter::value_in(relation_ids)))
                     }))
                     .await
                     .to_vec()
@@ -303,35 +410,20 @@ impl KnowledgeGraph {
         let results_search = traversal_filters
             .into_iter()
             .fold(
-                entity::search_from_restictions::<Entity<BaseEntity>>(
-                    &self.neo4j,
-                    embedding.clone(),
-                ),
+                entity::search(&self.neo4j, embedding.clone()),
                 |query, result_traversal_filter: Result<_, McpError>| match result_traversal_filter
                 {
-                    Ok(traversal_filter) => {
-                        query.filter(EntityFilter::default().traverse_relation(traversal_filter))
-                    }
+                    Ok(traversal_filter) => query.traversal(traversal_filter),
                     Err(_) => query,
                 },
             )
             .limit(10)
             .send()
             .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "search_properties",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?
+            .map_err(mcp_server::error::Error::from)?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "search_properties",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?;
+            .map_err(mcp_server::error::Error::from)?;
 
         let end_search = Instant::now();
         let search_time = end_search - end_filters;
@@ -345,14 +437,155 @@ impl KnowledgeGraph {
                 results_search
                     .into_iter()
                     .map(|result| {
+                        let entity = result.into_entity();
                         json!({
-                            "id": result.entity.id(),
-                            "name": result.entity.attributes.name,
-                            "description": result.entity.attributes.description,
+                            "id": entity.id,
+                            "name": entity.names(),
+                            "description": entity.descriptions(),
                         })
                     })
                     .collect::<Vec<_>>(),
             )
+            .expect("Failed to create JSON content"),
+        ]))
+    }
+
+    #[tool(description = "Same as get_entity_info, but accepts a list of entity IDs")]
+    async fn get_entities_info(
+        &self,
+        #[tool(param)]
+        #[schemars(
+            description = "The IDs of the entities to retrieve information for, as a comma-separated list."
+        )]
+        ids: Vec<String>,
+    ) -> Result<CallToolResult, McpError> {
+        let parsed_ids = ids
+            .iter()
+            .map(|id| {
+                id.parse::<Uuid>()
+                    .map_err(|e| McpError::invalid_params("Invalid UUID for entity_id", None))
+            })
+            .collect::<Result<Vec<Uuid>, McpError>>()?;
+
+        let entities = entity::find_many(&self.neo4j)
+            .id(parsed_ids.clone())
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        let out_relations = relation::find_many(&self.neo4j)
+            .from(parsed_ids.clone())
+            .limit(10)
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        let in_relations = relation::find_many(&self.neo4j)
+            .to(parsed_ids)
+            .limit(10)
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        // Function to get the related entities of the relations, i.e.: the entities that the relations point to and the type entity of the relation
+        let format_relations = |relations: Vec<Relation>, is_inbound: bool| async move {
+            let mut data = HashMap::new();
+
+            // Get the entities of the relations' types
+            let relation_type_entities = entity::find_many(&self.neo4j)
+                .id(relations
+                    .iter()
+                    .map(|r| r.r#type.clone())
+                    .collect::<Vec<_>>())
+                .send()
+                .await
+                .map_err(mcp_server::error::Error::from)?
+                .map_ok(|entity| (entity.id, entity))
+                .try_collect::<HashMap<_, _>>()
+                .await
+                .map_err(mcp_server::error::Error::from)?;
+
+            // Get the entities of the relations' neighbors
+            let neighbors = entity::find_many(&self.neo4j)
+                .id(relations
+                    .iter()
+                    .map(|r| {
+                        if is_inbound {
+                            r.from_entity.clone()
+                        } else {
+                            r.to_entity.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>())
+                .send()
+                .await
+                .map_err(mcp_server::error::Error::from)?
+                .map_ok(|entity| (entity.id, entity))
+                .try_collect::<HashMap<_, _>>()
+                .await
+                .map_err(mcp_server::error::Error::from)?;
+
+            relations.into_iter().for_each(|result| {
+                let relation_type = relation_type_entities.get(&result.r#type);
+                let neighbor = neighbors.get(
+                    if is_inbound {
+                        &result.from_entity
+                    } else {
+                        &result.to_entity
+                    },
+                );
+
+                if let (Some(relation_type), Some(neighbor)) = (relation_type, neighbor) {
+                    data.entry(if is_inbound {
+                        result.to_entity.clone()
+                    } else {
+                        result.from_entity.clone()
+                    })
+                    .or_insert_with(Vec::new)
+                    .push(json!({
+                        "relation_id": result.id,
+                        "relation_type": relation_type.names().join(", "),
+                        "id": if is_inbound {result.from_entity.clone()} else {result.to_entity.clone()},
+                        "name": neighbor.names().join(", "),
+                    }));
+                }
+            });
+
+            Ok::<_, McpError>(data)
+        };
+
+        let inbound_relations = format_relations(in_relations, true).await?;
+        let outbound_relations = format_relations(out_relations, false).await?;
+
+        let entities_details = stream::iter(entities)
+            .map(|entity| async move {
+                let id = entity.id.clone();
+                self.format_entity(entity)
+                    .await
+                    .map(|details| (id, details))
+            })
+            .buffered(10)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(CallToolResult::success(vec![
+            Content::json(entities_details.into_iter().map(|(id, entity_details)| {
+                json!({
+                    "id": id,
+                    "properties": entity_details.get("properties").cloned().unwrap_or_default(),
+                    "inbound_relations": inbound_relations.get(&id),
+                    "outbound_relations": outbound_relations.get(&id),
+                })
+            }).collect::<Vec<_>>())
             .expect("Failed to create JSON content"),
         ]))
     }
@@ -366,97 +599,107 @@ impl KnowledgeGraph {
         )]
         id: String,
     ) -> Result<CallToolResult, McpError> {
-        let entity_attributes = triple::find_many(&self.neo4j)
-            .entity_id(prop_filter::value(&id))
+        let id = id
+            .parse::<Uuid>()
+            .map_err(|e| McpError::invalid_params("Invalid UUID for entity_id", None))?;
+
+        let entity = if let Some(entity) = entity::find_one(&self.neo4j, id)
             .send()
             .await
-            .map_err(|e| {
-                McpError::internal_error("get_entity_info", Some(json!({ "error": e.to_string() })))
-            })?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| {
-                McpError::internal_error("get_entity_info", Some(json!({ "error": e.to_string() })))
-            })?;
-
-        let out_relations = relation::find_many::<RelationEdge<EntityNode>>(&self.neo4j)
-            .filter(
-                relation::RelationFilter::default()
-                    .from_(EntityFilter::default().id(prop_filter::value(id.clone()))),
-            )
-            .limit(10)
-            .send()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "get_relation_by_id",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "get_relation_by_id_not_found",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?;
-
-        let in_relations = relation::find_many::<RelationEdge<EntityNode>>(&self.neo4j)
-            .filter(
-                relation::RelationFilter::default()
-                    .to_(EntityFilter::default().id(prop_filter::value(id.clone()))),
-            )
-            .limit(10)
-            .send()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "get_relation_by_id",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "get_relation_by_id_not_found",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?;
-
-        tracing::info!("Found entity with ID '{}'", id);
-
-        let clean_up_relations = |relations: Vec<RelationEdge<EntityNode>>, is_inbound: bool| async move {
-            join_all(relations
-                .into_iter()
-                .map(|result| async move {
-                    json!({
-                        "relation_id": result.id,
-                        "relation_type": self.get_name_of_id(result.relation_type.clone()).await.unwrap_or(result.relation_type.to_string()),
-                        "id": if is_inbound {result.from.id.clone()} else {result.to.id.clone()},
-                        "name": self.get_name_of_id(if is_inbound {result.from.id.clone()} else {result.to.id.clone()}).await.unwrap_or("No name".to_string()),
-                    })
-                })).await.to_vec()
+            .map_err(mcp_server::error::Error::from)?
+        {
+            entity
+        } else {
+            return Err(McpError::resource_not_found(
+                "Entity not found",
+                Some(json!({ "entity_id": id })),
+            ));
         };
-        let inbound_relations = clean_up_relations(in_relations, true).await;
-        let outbound_relations = clean_up_relations(out_relations, false).await;
 
-        let attributes_vec: Vec<_> = join_all(entity_attributes.into_iter().map(
-            |attr| async {
-                json!({
-                    "attribute_name": self.get_name_of_id(attr.attribute).await.unwrap_or("No attribute name".to_string()),
-                    "attribute_value": String::try_from(attr.value).unwrap_or("No attributes".to_string()),
+        let out_relations = relation::find_many(&self.neo4j)
+            .from(id.clone())
+            .limit(10)
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        let in_relations = relation::find_many(&self.neo4j)
+            .to(id.clone())
+            .limit(10)
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        // Function to get the related entities of the relations, i.e.: the entities that the relations point to and the type entity of the relation
+        let format_relations = |relations: Vec<Relation>, is_inbound: bool| async move {
+            // Get the entities of the relations' types
+            let relation_type_entities = entity::find_many(&self.neo4j)
+                .id(relations
+                    .iter()
+                    .map(|r| r.r#type.clone())
+                    .collect::<Vec<_>>())
+                .send()
+                .await
+                .map_err(mcp_server::error::Error::from)?
+                .map_ok(|entity| (entity.id, entity))
+                .try_collect::<HashMap<_, _>>()
+                .await
+                .map_err(mcp_server::error::Error::from)?;
+
+            // Get the entities of the relations' neighbors
+            let neighbors = entity::find_many(&self.neo4j)
+                .id(relations
+                    .iter()
+                    .map(|r| {
+                        if is_inbound {
+                            r.from_entity.clone()
+                        } else {
+                            r.to_entity.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>())
+                .send()
+                .await
+                .map_err(mcp_server::error::Error::from)?
+                .map_ok(|entity| (entity.id, entity))
+                .try_collect::<HashMap<_, _>>()
+                .await
+                .map_err(mcp_server::error::Error::from)?;
+
+            Ok::<_, McpError>(relations.into_iter()
+                .filter_map(|result| {
+                    let relation_type = relation_type_entities.get(&result.r#type)?;
+                    let neighbor = neighbors.get(
+                        if is_inbound {
+                            &result.from_entity
+                        } else {
+                            &result.to_entity
+                        },
+                    )?;
+                    Some(json!({
+                        "relation_id": result.id,
+                        "relation_type": relation_type.names().join(", "),
+                        "id": if is_inbound {result.from_entity.clone()} else {result.to_entity.clone()},
+                        "name": neighbor.names().join(", "),
+                    }))
                 })
-            },
-        ))
-        .await
-        .to_vec();
+                .collect::<Vec<_>>())
+        };
+
+        let inbound_relations = format_relations(in_relations, true).await?;
+        let outbound_relations = format_relations(out_relations, false).await?;
+        let entity_details = self.format_entity(entity).await?;
 
         Ok(CallToolResult::success(vec![
             Content::json(json!({
-                "id": id,
-                "all_attributes": attributes_vec,
+                "id": entity_details.get("entity_id").cloned().unwrap_or_default(),
+                "properties": entity_details.get("properties").cloned().unwrap_or_default(),
                 "inbound_relations": inbound_relations,
                 "outbound_relations": outbound_relations,
             }))
@@ -474,31 +717,67 @@ impl KnowledgeGraph {
         #[schemars(description = "The id of the second Entity to find relations")]
         entity2_id: String,
     ) -> Result<CallToolResult, McpError> {
-        let relations = entity::find_path(&self.neo4j, entity1_id.clone(), entity2_id.clone())
-            .limit(10)
+        let paths = entity::find_path(
+            &self.neo4j,
+            entity1_id
+                .parse::<Uuid>()
+                .map_err(|e| McpError::invalid_params("Invalid UUID for entity1_id", None))?,
+            entity2_id
+                .parse::<Uuid>()
+                .map_err(|e| McpError::invalid_params("Invalid UUID for entity2_id", None))?,
+        )
+        .limit(10)
+        .send()
+        .await
+        .map_err(mcp_server::error::Error::from)?
+        .into_iter()
+        .collect::<Vec<_>>();
+
+        tracing::info!("Found {} paths", paths.len());
+
+        let entities = entity::find_many(&self.neo4j)
+            .id(paths
+                .iter()
+                .flat_map(|path| path.nodes_ids.clone())
+                .collect::<Vec<_>>())
             .send()
             .await
-            .map_err(|e| {
-                McpError::internal_error(
-                    "get_relation_by_ids",
-                    Some(json!({ "error": e.to_string() })),
-                )
-            })?
-            .into_iter()
-            .collect::<Vec<_>>();
+            .map_err(mcp_server::error::Error::from)?
+            .map_ok(|entity| (entity.id, entity))
+            .try_collect::<HashMap<_, _>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
+
+        let relation_types = entity::find_many(&self.neo4j)
+            .id(paths
+                .iter()
+                .flat_map(|path| path.relation_type_ids.clone())
+                .collect::<Vec<_>>())
+            .send()
+            .await
+            .map_err(mcp_server::error::Error::from)?
+            .map_ok(|entity| (entity.id, entity))
+            .try_collect::<HashMap<_, _>>()
+            .await
+            .map_err(mcp_server::error::Error::from)?;
 
         Ok(CallToolResult::success(
-            join_all(relations
+            paths
                 .into_iter()
-                .map(|result| async {
+                .map(|result| {
                     Content::json(json!({
-                    "nodes": join_all(result.nodes_ids.into_iter().map(|node_id| async {self.get_name_of_id(node_id).await.unwrap_or("No attribute name".to_string())})).await.to_vec(),
-                    "relations": join_all(result.relations_ids.into_iter().map(|node_id| async {self.get_name_of_id(node_id).await.unwrap_or("No attribute name".to_string())})).await.to_vec(),
+                        "nodes": result.nodes_ids.into_iter().map(|node_id| entities.get(&node_id).map_or_else(
+                            || json!({"id": node_id, "name": "Unknown entity"}),
+                            |entity| json!({"id": entity.id, "name": entity.names().join(", ")}),
+                        )).collect::<Vec<_>>(),
+                        "relations": result.relation_type_ids.into_iter().map(|relation_id| relation_types.get(&relation_id).map_or_else(
+                            || json!({"id": relation_id, "name": "Unknown relation type"}),
+                            |relation| json!({"id": relation.id, "name": relation.names().join(", ")}),
+                        )).collect::<Vec<_>>(),
                     }))
                     .expect("Failed to create JSON content")
-                }))
-                .await
-                .to_vec(),
+                })
+                .collect::<Vec<_>>(),
         ))
     }
 
@@ -507,7 +786,7 @@ impl KnowledgeGraph {
         query: String,
         limit: Option<usize>,
         filter: EntityFilter,
-    ) -> Result<Vec<String>, McpError> {
+    ) -> Result<Vec<Uuid>, McpError> {
         let embedding = self
             .embedding_model
             .embed(vec![&query], None)
@@ -519,75 +798,42 @@ impl KnowledgeGraph {
             .collect::<Vec<_>>();
 
         let limit = limit.unwrap_or(10);
-        let semantic_search_triples =
-            entity::prefiltered_search::<EntityNode>(&self.neo4j, embedding.clone())
-                .filter(filter.clone())
-                .limit(limit)
-                .send()
-                .await
-                .map_err(|e| {
-                    tracing::error!("Error: {e:?}");
-                    McpError::internal_error(
-                        "search_types_failed",
-                        Some(json!({ "error": e.to_string() })),
-                    )
-                })?
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(|e| {
-                    tracing::error!("Error changing to vec: {e:?}");
-                    McpError::internal_error(
-                        "search_types_failed",
-                        Some(json!({ "error": e.to_string() })),
-                    )
-                })?;
+        let semantic_search_triples = entity::exact_search(&self.neo4j, embedding.clone())
+            .filter(filter.clone())
+            .limit(limit)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("Error: {e:?}");
+                McpError::internal_error(
+                    "search_types_failed",
+                    Some(json!({ "error": e.to_string() })),
+                )
+            })?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!("Error changing to vec: {e:?}");
+                McpError::internal_error(
+                    "search_types_failed",
+                    Some(json!({ "error": e.to_string() })),
+                )
+            })?;
 
-        let mut ids: Vec<String> = semantic_search_triples
+        let mut ids = semantic_search_triples
             .into_iter()
-            .map(|semantic_search_result| semantic_search_result.entity.id)
-            .collect();
+            .map(|semantic_search_result| semantic_search_result.entity_id)
+            .collect::<Vec<_>>();
 
         self.dedup(&mut ids);
 
         Ok(ids)
     }
 
-    fn dedup(&self, v: &mut Vec<String>) {
+    fn dedup<T: Eq + Hash + Clone>(&self, v: &mut Vec<T>) {
         let mut set = HashSet::new();
 
         v.retain(|x| set.insert(x.clone()));
-    }
-
-    async fn format_from_id(&self, id: String) -> Value {
-        let mut value = json!({
-            "entity_not_found_with_id": id.clone(),
-        });
-
-        let result_entity = entity::find_one::<Entity<BaseEntity>>(&self.neo4j, id)
-            .send()
-            .await;
-
-        if let Ok(Some(entity_node)) = result_entity {
-            value = json!({
-                "entity_id": entity_node.id(),
-                "name": entity_node.attributes.name,
-                "description": entity_node.attributes.description
-            });
-        };
-        value
-    }
-
-    async fn get_name_of_id(&self, id: String) -> Result<String, McpError> {
-        let entity = entity::find_one::<Entity<BaseEntity>>(&self.neo4j, &id)
-            .send()
-            .await
-            .map_err(|e| {
-                McpError::internal_error("get_entity_name", Some(json!({ "error": e.to_string() })))
-            })?
-            .ok_or_else(|| {
-                McpError::internal_error("entity_name_not_found", Some(json!({ "id": id })))
-            })?;
-        Ok(entity.attributes.name.unwrap_or("No name".to_string()))
     }
 }
 

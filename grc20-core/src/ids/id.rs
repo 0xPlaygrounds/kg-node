@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use md5::{Digest, Md5};
-use uuid::Builder;
+use uuid::{Builder, Uuid};
 
 use super::base58::encode_uuid_to_base58;
 
@@ -38,15 +38,15 @@ impl From<Grc20Id> for String {
     }
 }
 
-pub fn create_merged_version_id(merged_version_ids: Vec<&str>) -> String {
+pub fn create_merged_version_id(merged_version_ids: Vec<&str>) -> Uuid {
     create_id_from_unique_string(merged_version_ids.join(","))
 }
 
-pub fn create_version_id(space_id: &str, proposal_id: &str) -> String {
+pub fn create_version_id(space_id: &str, proposal_id: &str) -> Uuid {
     create_id_from_unique_string(format!("{space_id}:{proposal_id}"))
 }
 
-pub fn create_version_id_from_block(space_id: &str, block: u64) -> String {
+pub fn create_version_id_from_block(space_id: &str, block: u64) -> Uuid {
     create_id_from_unique_string(format!("{space_id}:{block}"))
 }
 
@@ -55,36 +55,19 @@ pub fn create_version_id_from_block(space_id: &str, block: u64) -> String {
  * Users can import or fork a space from any network and import the contents of the original space into
  * the new one that they're creating.
  */
-pub fn create_space_id(network: &str, address: &str) -> String {
+pub fn create_space_id(network: &str, address: &str) -> Uuid {
     create_id_from_unique_string(format!("{network}:{address}"))
 }
 
-pub fn create_id_from_unique_string(text: impl Into<String>) -> String {
+pub fn create_id_from_unique_string(text: impl Into<String>) -> Uuid {
     let mut hasher = Md5::new();
     hasher.update(text.into());
     let hashed: [u8; 16] = hasher.finalize().into();
 
-    let uuid = Builder::from_random_bytes(hashed).into_uuid();
-    encode_uuid_to_base58(&uuid.to_string())
+    Builder::from_random_bytes(hashed).into_uuid()
+    // encode_uuid_to_base58(&uuid.to_string())
 }
 
 pub fn create_geo_id() -> String {
     encode_uuid_to_base58(&uuid::Uuid::new_v4().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::network_ids;
-
-    #[test]
-    fn test_space_id() {
-        assert_eq!(
-            create_space_id(
-                network_ids::GEO,
-                "0xcD48eF54771d9cf7dDA324c64bF4e53C161aF294"
-            ),
-            "25omwWh6HYgeRQKCaSpVpa"
-        )
-    }
 }

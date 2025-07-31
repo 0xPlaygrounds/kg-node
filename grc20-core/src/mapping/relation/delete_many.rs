@@ -1,76 +1,58 @@
-use crate::{block::BlockMetadata, error::DatabaseError, indexer_ids, mapping::Query};
+use neo4rs::BoltType;
+use uuid::Uuid;
 
+/// Creates a DeleteManyQuery for batch deleting relations.
+///
+/// # Arguments
+/// * `neo4j` - The Neo4j graph connection.
+/// * `ids` - A vector of relation UUIDs to delete.
+///
+/// # Returns
+/// An instance of `DeleteManyQuery`.
+pub fn delete_many(neo4j: neo4rs::Graph, ids: Vec<Uuid>) -> DeleteManyQuery {
+    DeleteManyQuery::new(neo4j, ids)
+}
+
+/// Query type for batch deleting relations in Neo4j.
+#[derive(Clone)]
 pub struct DeleteManyQuery {
+    /// The relation UUIDs to delete.
+    pub ids: Vec<Uuid>,
     neo4j: neo4rs::Graph,
-    block: BlockMetadata,
-    space_id: String,
-    space_version: String,
-    relations: Vec<String>,
 }
 
 impl DeleteManyQuery {
-    pub(super) fn new(
-        neo4j: &neo4rs::Graph,
-        block: &BlockMetadata,
-        space_id: String,
-        space_version: String,
-    ) -> Self {
-        Self {
-            neo4j: neo4j.clone(),
-            block: block.clone(),
-            space_id,
-            space_version,
-            relations: vec![],
-        }
+    /// Creates a new DeleteManyQuery.
+    ///
+    /// # Arguments
+    /// * `neo4j` - The Neo4j graph connection.
+    /// * `ids` - A vector of relation UUIDs to delete.
+    ///
+    /// # Returns
+    /// An instance of `DeleteManyQuery`.
+    pub fn new(neo4j: neo4rs::Graph, ids: Vec<Uuid>) -> Self {
+        Self { neo4j, ids }
     }
 
-    pub fn relation(mut self, relation_id: impl Into<String>) -> Self {
-        self.relations.push(relation_id.into());
-        self
-    }
+    /// Sends the batch delete query to Neo4j.
+    ///
+    /// # Errors
+    /// Returns a `neo4rs::Error` if the query fails.
+    pub async fn send(self) -> Result<(), neo4rs::Error> {
+        let cypher = "
+            UNWIND $relation_ids AS relation_id
+            MATCH ()-[r:RELATION {id: relation_id}]->()
+            DELETE r
+        ";
 
-    pub fn relation_mut(&mut self, relation_id: impl Into<String>) {
-        self.relations.push(relation_id.into());
-    }
+        let relation_ids: Vec<BoltType> = self
+            .ids
+            .into_iter()
+            .map(|id| id.to_string().into())
+            .collect();
 
-    pub fn relations(mut self, relation_ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.relations
-            .extend(relation_ids.into_iter().map(Into::into));
-        self
-    }
-
-    pub fn relations_mut(&mut self, relation_ids: impl IntoIterator<Item = impl Into<String>>) {
-        self.relations
-            .extend(relation_ids.into_iter().map(Into::into));
-    }
-}
-
-impl Query<()> for DeleteManyQuery {
-    async fn send(self) -> Result<(), DatabaseError> {
-        // TODO: Add relation entity deletion
-        const QUERY: &str = const_format::formatcp!(
-            r#"
-                UNWIND $relations as relation_id
-                MATCH () -[r:RELATION {{id: relation_id}}]-> ()
-                WHERE r.space_id = $space_id
-                AND r.max_version IS NULL
-                SET r.max_version = $space_version
-                SET r += {{
-                    `{UPDATED_AT}`: datetime($block_timestamp),
-                    `{UPDATED_AT_BLOCK}`: $block_number
-                }}
-            "#,
-            UPDATED_AT = indexer_ids::UPDATED_AT_TIMESTAMP,
-            UPDATED_AT_BLOCK = indexer_ids::UPDATED_AT_BLOCK,
-        );
-
-        let query = neo4rs::query(QUERY)
-            .param("space_id", self.space_id)
-            .param("space_version", self.space_version)
-            .param("relations", self.relations)
-            .param("block_timestamp", self.block.timestamp.to_rfc3339())
-            .param("block_number", self.block.block_number.to_string());
-
-        Ok(self.neo4j.run(query).await?)
+        let query = neo4rs::query(cypher).param("relation_ids", relation_ids);
+        self.neo4j.run(query).await?;
+        Ok(())
     }
 }

@@ -2,12 +2,18 @@ use chrono::DateTime;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use futures::{stream, StreamExt, TryStreamExt};
 use grc20_core::{
-    block::BlockMetadata, error::DatabaseError, ids::create_geo_id, indexer_ids, mapping::Query,
-    neo4rs, pb::geo::GeoOutput,
+    block::BlockMetadata,
+    entity::UpdateEntity,
+    error::DatabaseError,
+    ids::{create_geo_id, indexer_ids},
+    neo4rs,
+    pb::chain::GeoOutput,
+    value::Value,
 };
 use ipfs::IpfsClient;
 use prost::Message;
 use substreams_utils::pb::sf::substreams::rpc::v2::BlockScopedData;
+use uuid::Uuid;
 
 use crate::{
     blacklist, metrics,
@@ -29,8 +35,14 @@ pub enum HandlerError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] DatabaseError),
 
+    #[error("Neo4j error: {0}")]
+    Neo4jError(#[from] neo4rs::Error),
+
     #[error("Cache error: {0}")]
     CacheError(#[from] cache::CacheError),
+
+    #[error("Invalid UUID: {0}")]
+    InvalidUuid(String),
 
     // #[error("KG error: {0}")]
     // KgError(#[from] kg::Error),
@@ -43,7 +55,7 @@ pub struct EventHandler {
     pub(crate) neo4j: neo4rs::Graph,
     #[allow(dead_code)]
     pub(crate) cache: Option<Arc<KgCache>>,
-    pub(crate) spaces_blacklist: Vec<String>,
+    pub(crate) spaces_blacklist: Vec<Uuid>,
     pub(crate) embedding_model: fastembed::TextEmbedding,
     pub(crate) embedding_model_dim: usize,
 
@@ -80,7 +92,15 @@ impl EventHandler {
             cache,
             spaces_blacklist: match blacklist::load() {
                 Ok(Some(blacklist)) => {
-                    tracing::info!("Blacklisting spaces: {}", blacklist.spaces.join(", "));
+                    tracing::info!(
+                        "Blacklisting spaces: {}",
+                        blacklist
+                            .spaces
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                     blacklist.spaces
                 }
                 Ok(None) => {
@@ -170,27 +190,7 @@ impl substreams_utils::Sink<preprocess::EventData> for EventHandler {
 
         Ok(EventData {
             block,
-            spaces_created: data.spaces_created,
-            governance_plugins_created: data.governance_plugins_created,
-            initial_editors_added: data.initial_editors_added,
-            votes_cast: data.votes_cast,
             edits_published: prefetched_edits,
-            successor_spaces_created: data.successor_spaces_created,
-            subspaces_added: data.subspaces_added,
-            subspaces_removed: data.subspaces_removed,
-            executed_proposals: data.executed_proposals,
-            members_added: data.members_added,
-            editors_added: data.editors_added,
-            personal_plugins_created: data.personal_plugins_created,
-            members_removed: data.members_removed,
-            editors_removed: data.editors_removed,
-            edits: data.edits,
-            proposed_added_members: data.proposed_added_members,
-            proposed_removed_members: data.proposed_removed_members,
-            proposed_added_editors: data.proposed_added_editors,
-            proposed_removed_editors: data.proposed_removed_editors,
-            proposed_added_subspaces: data.proposed_added_subspaces,
-            proposed_removed_subspaces: data.proposed_removed_subspaces,
         })
     }
 
@@ -206,287 +206,6 @@ impl substreams_utils::Sink<preprocess::EventData> for EventHandler {
         metrics::HEAD_BLOCK_NUMBER.set(data.block.block_number as f64);
         metrics::HEAD_BLOCK_TIMESTAMP.set(data.block.timestamp.timestamp() as f64);
 
-        // Handle new space creation
-        if !data.spaces_created.is_empty() {
-            tracing::info!(
-                "Block #{} ({}): Processing {} space created events",
-                data.block.block_number,
-                data.block.timestamp,
-                data.spaces_created.len()
-            );
-        }
-        let created_space_ids = stream::iter(&data.spaces_created)
-            .then(|event| async {
-                self.handle_space_created(event, &data.edits_published, &data.block)
-                    .await
-            })
-            .try_collect::<Vec<_>>()
-            .await?;
-
-        if self.governance {
-            // Handle personal space creation
-            if !data.personal_plugins_created.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} personal space created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.personal_plugins_created.len()
-                );
-            }
-            stream::iter(&data.personal_plugins_created)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_personal_space_created(event, &data.block).await
-                })
-                .await?;
-
-            // Handle new governance plugin creation
-            if !data.governance_plugins_created.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} governance plugin created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.governance_plugins_created.len()
-                );
-            }
-            stream::iter(&data.governance_plugins_created)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_governance_plugin_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            if !data.initial_editors_added.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} initial editors added events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.initial_editors_added.len()
-                );
-            }
-            stream::iter(&data.initial_editors_added)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_initial_space_editors_added(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            if !data.members_added.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} members added events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.members_added.len()
-                );
-            }
-            stream::iter(&data.members_added)
-                .map(Ok)
-                .try_for_each(|event| async { self.handle_member_added(event, &data.block).await })
-                .await?;
-
-            if !data.members_removed.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} members removed events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.members_removed.len()
-                );
-            }
-            stream::iter(&data.members_removed)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_member_removed(event, &data.block).await
-                })
-                .await?;
-
-            if !data.editors_added.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} editors added events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.editors_added.len()
-                );
-            }
-            stream::iter(&data.editors_added)
-                .map(Ok)
-                .try_for_each(|event| async { self.handle_editor_added(event, &data.block).await })
-                .await?;
-
-            if !data.editors_removed.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} editors removed events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.editors_removed.len()
-                );
-            }
-            stream::iter(&data.editors_removed)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_editor_removed(event, &data.block).await
-                })
-                .await?;
-        }
-
-        if !data.subspaces_added.is_empty() {
-            tracing::info!(
-                "Block #{} ({}): Processing {} subspaces added events",
-                data.block.block_number,
-                data.block.timestamp,
-                data.subspaces_added.len()
-            );
-        }
-        stream::iter(&data.subspaces_added)
-            .map(Ok)
-            .try_for_each(|event| async { self.handle_subspace_added(event, &data.block).await })
-            .await?;
-
-        if !data.subspaces_removed.is_empty() {
-            tracing::info!(
-                "Block #{} ({}): Processing {} subspaces removed events",
-                data.block.block_number,
-                data.block.timestamp,
-                data.subspaces_removed.len()
-            );
-        }
-        stream::iter(&data.subspaces_removed)
-            .map(Ok)
-            .try_for_each(|event| async { self.handle_subspace_removed(event, &data.block).await })
-            .await?;
-
-        if self.governance {
-            if !data.proposed_added_members.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} add member proposal created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.proposed_added_members.len()
-                );
-            }
-            stream::iter(&data.proposed_added_members)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_add_member_proposal_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            if !data.proposed_removed_members.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} remove member proposal created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.proposed_removed_members.len()
-                );
-            }
-            stream::iter(&data.proposed_removed_members)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_remove_member_proposal_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            if !data.proposed_added_editors.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} add editor proposal created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.proposed_added_editors.len()
-                );
-            }
-            stream::iter(&data.proposed_added_editors)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_add_editor_proposal_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            if !data.proposed_removed_editors.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} remove editor proposal created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.proposed_removed_editors.len()
-                );
-            }
-            stream::iter(&data.proposed_removed_editors)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_remove_editor_proposal_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            // Handle proposed add subspace
-            if !data.proposed_added_subspaces.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} add subspace proposal created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.proposed_added_subspaces.len()
-                );
-            }
-            stream::iter(&data.proposed_added_subspaces)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_add_subspace_proposal_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            // Handle remove subspace proposal created
-            if !data.proposed_removed_subspaces.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} remove subspace proposal created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.proposed_removed_subspaces.len()
-                );
-            }
-            stream::iter(&data.proposed_removed_subspaces)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_remove_subspace_proposal_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            // Handle publish edit proposal created
-            if !data.edits.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} publish edit proposal created events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.edits.len()
-                );
-            }
-            stream::iter(&data.edits)
-                .map(Ok)
-                .try_for_each(|event| async {
-                    self.handle_publish_edit_proposal_created(event, &data.block)
-                        .await
-                })
-                .await?;
-
-            // Handle vote cast
-            if !data.votes_cast.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} vote cast events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.votes_cast.len()
-                );
-            }
-            stream::iter(&data.votes_cast)
-                .map(Ok)
-                .try_for_each(|event| async { self.handle_vote_cast(event, &data.block).await })
-                .await?;
-        }
-
         // Handle edits published
         if !data.edits_published.is_empty() {
             tracing::info!(
@@ -496,46 +215,23 @@ impl substreams_utils::Sink<preprocess::EventData> for EventHandler {
                 data.edits_published.len()
             );
         }
-        self.handle_edits_published(data.edits_published, &created_space_ids, &data.block)
+        self.handle_edits_published(data.edits_published, &vec![], &data.block)
             .await?;
 
-        if self.governance {
-            // Handle proposal executed
-            if !data.executed_proposals.is_empty() {
-                tracing::info!(
-                    "Block #{} ({}): Processing {} executed proposal events",
-                    data.block.block_number,
-                    data.block.timestamp,
-                    data.executed_proposals.len()
-                );
-            }
-            stream::iter(&data.executed_proposals)
-                .enumerate()
-                .map(Ok)
-                .try_for_each(|(idx, event)| {
-                    let block_ref = &data.block;
-                    async move { self.handle_proposal_executed(event, block_ref, idx).await }
-                })
-                .await?;
-        }
-
         // Persist block number and timestamp
-        grc20_core::mapping::triple::insert_many(
+        grc20_core::entity::update_one(
             &self.neo4j,
-            &BlockMetadata::default(),
+            UpdateEntity::new(indexer_ids::CURSOR_ID)
+                .value(Value::new(
+                    indexer_ids::BLOCK_NUMBER_ATTRIBUTE,
+                    data.block.block_number.to_string(),
+                ))
+                .value(Value::new(
+                    indexer_ids::BLOCK_TIMESTAMP_ATTRIBUTE,
+                    data.block.timestamp.to_string(),
+                )),
             indexer_ids::INDEXER_SPACE_ID,
-            "0",
         )
-        .triple(grc20_core::mapping::triple::Triple::new(
-            indexer_ids::CURSOR_ID,
-            indexer_ids::BLOCK_NUMBER_ATTRIBUTE,
-            data.block.block_number,
-        ))
-        .triple(grc20_core::mapping::triple::Triple::new(
-            indexer_ids::CURSOR_ID,
-            indexer_ids::BLOCK_TIMESTAMP_ATTRIBUTE,
-            data.block.timestamp,
-        ))
         .send()
         .await?;
 
@@ -543,30 +239,24 @@ impl substreams_utils::Sink<preprocess::EventData> for EventHandler {
     }
 
     async fn load_persisted_cursor(&self) -> Result<Option<String>, Self::Error> {
-        let cursor = grc20_core::mapping::triple::find_one(
+        let cursor = grc20_core::value::find_one(
             &self.neo4j,
-            indexer_ids::CURSOR_ATTRIBUTE,
-            indexer_ids::CURSOR_ID,
             indexer_ids::INDEXER_SPACE_ID,
-            Some("0".to_string()),
+            indexer_ids::CURSOR_ID,
+            indexer_ids::CURSOR_ATTRIBUTE,
         )
         .send()
         .await?;
 
-        Ok(cursor.map(|c| c.value.value))
+        Ok(cursor.map(|c| c.value))
     }
 
     async fn persist_cursor(&self, cursor: String) -> Result<(), Self::Error> {
-        grc20_core::mapping::triple::Triple::new(
-            indexer_ids::CURSOR_ID,
-            indexer_ids::CURSOR_ATTRIBUTE,
-            cursor,
-        )
-        .insert(
+        grc20_core::entity::update_one(
             &self.neo4j,
-            &BlockMetadata::default(),
+            UpdateEntity::new(indexer_ids::CURSOR_ID)
+                .value(Value::new(indexer_ids::CURSOR_ATTRIBUTE, cursor)),
             indexer_ids::INDEXER_SPACE_ID,
-            "0",
         )
         .send()
         .await?;

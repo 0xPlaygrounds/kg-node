@@ -1,5 +1,5 @@
 # GRC20 Neo4j Indexer
-This repo contains a GRC20 indexer that uses Neo4j to store triple data. 
+This repo contains a GRC20 indexer that uses Neo4j to store triple data.
 
 ## Running the indexer
 ❗Important: Both methods require the `SUBSTREAMS_ENDPOINT_URL` (and optionally `SUBSTREAMS_API_TOKEN` if using a substreams provider with authentication) environment variables to be set.
@@ -24,8 +24,6 @@ docker run \
 In a separate terminal, run the following commands:
 ```bash
 CFLAGS='-std=gnu17' cargo run --release --bin sink -- \
-    --no-versioning \
-    --no-governance \
     --neo4j-uri neo4j://localhost:7687 \
     --neo4j-user neo4j \
     --neo4j-pass neo4j

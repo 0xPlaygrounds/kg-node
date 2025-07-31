@@ -1,217 +1,472 @@
-use std::collections::HashMap;
-
 use neo4rs::BoltType;
+use serde::Deserialize;
+use std::collections::HashMap;
+use uuid::Uuid;
 
-use crate::{
-    block::BlockMetadata,
-    mapping::{
-        attributes,
-        entity::{self, EntityNodeRef, SystemProperties},
-        triple, AttributeNode, Attributes, Triple, Value,
-    },
-    pb, system_ids,
-};
+use crate::{pb, system_ids};
 
-use super::InsertOneQuery;
-
-/// Lightweight representation of a relation edge without it's properties.
-#[derive(Clone, Debug, serde::Deserialize, PartialEq)]
-pub struct RelationEdge<T> {
-    pub id: String,
-
-    pub from: T,
-    pub to: T,
-    pub relation_type: String, // TODO: Change to T
-
-    pub index: String,
-
-    /// System properties
-    #[serde(flatten)]
-    pub system_properties: SystemProperties,
+/// Error type for converting from pb::grc20::Relation to Relation
+#[derive(Debug, thiserror::Error)]
+pub enum ConversionError {
+    #[error("Invalid UUID for {0}: {1}")]
+    InvalidUuid(String, String),
+    #[error("Invalid UTF-8 for position: {0}")]
+    InvalidPositionUtf8(String),
 }
 
-impl RelationEdge<EntityNodeRef> {
-    pub fn new(
-        id: impl Into<String>,
-        from: impl Into<String>,
-        to: impl Into<String>,
-        relation_type: impl Into<String>,
-        index: impl Into<Value>,
-    ) -> Self {
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Relation {
+    pub id: Uuid,
+    pub r#type: Uuid,
+    pub from_entity: Uuid,
+    pub to_entity: Uuid,
+    pub entity: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct CreateRelation {
+    pub id: Uuid,
+    pub r#type: Uuid,
+    pub from_entity: Uuid,
+    pub from_space: Option<Uuid>,
+    pub from_version: Option<Uuid>,
+    pub to_entity: Uuid,
+    pub to_space: Option<Uuid>,
+    pub to_version: Option<Uuid>,
+    pub entity: Uuid,
+    pub position: Option<String>,
+    pub verified: Option<bool>,
+}
+
+impl CreateRelation {
+    pub fn new(id: Uuid, r#type: Uuid, from_entity: Uuid, to_entity: Uuid, entity: Uuid) -> Self {
         Self {
-            id: id.into(),
-            from: EntityNodeRef(from.into()),
-            to: EntityNodeRef(to.into()),
-            relation_type: relation_type.into(),
-            index: Into::<Value>::into(index).value,
-            system_properties: SystemProperties::default(),
+            id,
+            r#type,
+            from_entity,
+            from_space: None,
+            from_version: None,
+            to_entity,
+            to_space: None,
+            to_version: None,
+            entity,
+            position: None,
+            verified: None,
         }
     }
 
-    /// Create a new TYPES relation
-    pub fn new_types(
-        id: impl Into<String>,
-        from: impl Into<String>,
-        to: impl Into<String>,
-        index: impl Into<Value>,
-    ) -> Self {
-        Self::new(id, from, to, system_ids::TYPES_ATTRIBUTE, index)
+    pub fn from_space(mut self, space: Uuid) -> Self {
+        self.from_space = Some(space);
+        self
     }
 
-    pub fn insert(
-        self,
-        neo4j: &neo4rs::Graph,
-        block: &BlockMetadata,
-        space_id: impl Into<String>,
-        space_version: impl Into<String>,
-    ) -> InsertOneQuery<Self> {
-        InsertOneQuery::new(neo4j, block, space_id.into(), space_version.into(), self)
+    pub fn from_version(mut self, version: Uuid) -> Self {
+        self.from_version = Some(version);
+        self
     }
 
-    pub fn get_attributes(
-        &self,
-        neo4j: &neo4rs::Graph,
-        space_id: impl Into<String>,
-        space_version: Option<String>,
-    ) -> attributes::FindOneQuery {
-        attributes::FindOneQuery::new(neo4j, self.id.clone(), space_id.into(), space_version)
+    pub fn to_space(mut self, space: Uuid) -> Self {
+        self.to_space = Some(space);
+        self
     }
 
-    pub fn set_attribute(
-        &self,
-        neo4j: &neo4rs::Graph,
-        block: &BlockMetadata,
-        space_id: impl Into<String>,
-        space_version: impl Into<String>,
-        attribute: AttributeNode,
-    ) -> triple::InsertOneQuery {
-        triple::InsertOneQuery::new(
-            neo4j,
-            block,
-            space_id.into(),
-            space_version.into(),
-            Triple::new(self.id.clone(), attribute.id, attribute.value),
-        )
+    pub fn to_version(mut self, version: Uuid) -> Self {
+        self.to_version = Some(version);
+        self
     }
 
-    pub fn set_attributes(
-        &self,
-        neo4j: &neo4rs::Graph,
-        block: &BlockMetadata,
-        space_id: impl Into<String>,
-        space_version: impl Into<String>,
-        attributes: Attributes,
-    ) -> attributes::InsertOneQuery<Attributes> {
-        attributes::InsertOneQuery::new(
-            neo4j,
-            block,
-            self.id.clone(),
-            space_id.into(),
-            space_version.into(),
-            attributes,
-        )
+    pub fn position(mut self, position: impl Into<String>) -> Self {
+        self.position = Some(position.into());
+        self
     }
 
-    pub fn to<T>(&self, neo4j: &neo4rs::Graph) -> entity::FindOneQuery<T> {
-        entity::find_one(neo4j, &self.to)
-    }
-
-    pub fn from<T>(&self, neo4j: &neo4rs::Graph) -> entity::FindOneQuery<T> {
-        entity::find_one(neo4j, &self.from)
-    }
-
-    pub fn relation_type<T>(&self, neo4j: &neo4rs::Graph) -> entity::FindOneQuery<T> {
-        entity::find_one(neo4j, &self.relation_type)
-    }
-
-    pub fn entity<T>(&self, neo4j: &neo4rs::Graph) -> entity::FindOneQuery<T> {
-        entity::find_one(neo4j, &self.id)
-    }
-
-    pub fn index(&self) -> &str {
-        &self.index
+    pub fn verified(mut self, verified: bool) -> Self {
+        self.verified = Some(verified);
+        self
     }
 }
 
-impl From<pb::ipfs::Relation> for RelationEdge<EntityNodeRef> {
-    fn from(relation: pb::ipfs::Relation) -> Self {
-        Self {
-            id: relation.id,
-            from: relation.from_entity.into(),
-            to: relation.to_entity.into(),
-            relation_type: relation.r#type,
-            index: relation.index,
-            system_properties: SystemProperties::default(),
-        }
-    }
-}
-
-impl From<RelationEdge<EntityNodeRef>> for BoltType {
-    fn from(relation: RelationEdge<EntityNodeRef>) -> Self {
-        let mut triple_bolt_map = HashMap::new();
-        triple_bolt_map.insert(
+impl From<CreateRelation> for BoltType {
+    fn from(relation: CreateRelation) -> Self {
+        let mut map = HashMap::new();
+        map.insert(
             neo4rs::BoltString { value: "id".into() },
-            relation.id.into(),
+            relation.id.to_string().into(),
         );
-        triple_bolt_map.insert(
+        map.insert(
             neo4rs::BoltString {
-                value: "from".into(),
+                value: "type".into(),
             },
-            relation.from.0.into(),
+            relation.r#type.to_string().into(),
         );
-        triple_bolt_map.insert(
-            neo4rs::BoltString { value: "to".into() },
-            relation.to.0.into(),
-        );
-        triple_bolt_map.insert(
+        if relation.r#type == system_ids::TYPES_ATTRIBUTE {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "labels".into(),
+                },
+                relation.to_entity.to_string().into(),
+            );
+        } else {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "labels".into(),
+                },
+                Vec::<String>::new().into(),
+            );
+        }
+        map.insert(
             neo4rs::BoltString {
-                value: "relation_type".into(),
+                value: "from_entity".into(),
             },
-            relation.relation_type.into(),
+            relation.from_entity.to_string().into(),
         );
-        triple_bolt_map.insert(
+        if let Some(from_space) = relation.from_space {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "from_space".into(),
+                },
+                from_space.to_string().into(),
+            );
+        }
+        if let Some(from_version) = relation.from_version {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "from_version".into(),
+                },
+                from_version.to_string().into(),
+            );
+        }
+        map.insert(
             neo4rs::BoltString {
-                value: "index".into(),
+                value: "to_entity".into(),
             },
-            relation.index.into(),
+            relation.to_entity.to_string().into(),
         );
+        if let Some(to_space) = relation.to_space {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "to_space".into(),
+                },
+                to_space.to_string().into(),
+            );
+        }
+        if let Some(to_version) = relation.to_version {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "to_version".into(),
+                },
+                to_version.to_string().into(),
+            );
+        }
+        map.insert(
+            neo4rs::BoltString {
+                value: "entity".into(),
+            },
+            relation.entity.to_string().into(),
+        );
+        if let Some(position) = relation.position {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "position".into(),
+                },
+                position.into(),
+            );
+        }
+        if let Some(verified) = relation.verified {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "verified".into(),
+                },
+                verified.into(),
+            );
+        }
+        BoltType::Map(neo4rs::BoltMap { value: map })
+    }
+}
 
-        BoltType::Map(neo4rs::BoltMap {
-            value: triple_bolt_map,
+impl TryFrom<pb::grc20::Relation> for CreateRelation {
+    type Error = ConversionError;
+
+    fn try_from(pb_relation: pb::grc20::Relation) -> Result<Self, Self::Error> {
+        let id = Uuid::from_bytes(
+            pb_relation
+                .id
+                .try_into()
+                .map_err(|e| ConversionError::InvalidUuid("id".to_string(), format!("{e:?}")))?,
+        );
+        let r#type = Uuid::from_bytes(
+            pb_relation
+                .r#type
+                .try_into()
+                .map_err(|e| ConversionError::InvalidUuid("type".to_string(), format!("{e:?}")))?,
+        );
+        let from_entity = Uuid::from_bytes(pb_relation.from_entity.try_into().map_err(|e| {
+            ConversionError::InvalidUuid("from_entity".to_string(), format!("{e:?}"))
+        })?);
+        let from_space = match pb_relation.from_space {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("from_space".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+        let from_version = match pb_relation.from_version {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("from_version".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+        let to_entity = Uuid::from_bytes(pb_relation.to_entity.try_into().map_err(|e| {
+            ConversionError::InvalidUuid("to_entity".to_string(), format!("{e:?}"))
+        })?);
+        let to_space = match pb_relation.to_space {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("to_space".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+        let to_version = match pb_relation.to_version {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("to_version".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+        let entity =
+            Uuid::from_bytes(pb_relation.entity.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("entity".to_string(), format!("{e:?}"))
+            })?);
+        let position = match pb_relation.position {
+            Some(pos) => Some(pos),
+            None => None,
+        };
+        let verified = pb_relation.verified;
+
+        Ok(Self {
+            id,
+            r#type,
+            from_entity,
+            from_space,
+            from_version,
+            to_entity,
+            to_space,
+            to_version,
+            entity,
+            position,
+            verified,
         })
     }
 }
 
-/// High level model encapsulating a relation and its attributes.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Relation<T, N> {
-    pub(super) relation: RelationEdge<N>,
-
-    pub attributes: T,
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct UpdateRelation {
+    pub id: Uuid,
+    pub from_space: Option<Uuid>,
+    pub from_version: Option<Uuid>,
+    pub to_space: Option<Uuid>,
+    pub to_version: Option<Uuid>,
+    pub position: Option<String>,
+    pub verified: Option<bool>,
 }
 
-impl<T> Relation<T, EntityNodeRef> {
-    pub fn new(
-        id: impl Into<String>,
-        from: impl Into<String>,
-        to: impl Into<String>,
-        relation_type: impl Into<String>,
-        index: impl Into<Value>,
-        attributes: T,
-    ) -> Self {
-        Relation {
-            relation: RelationEdge::new(id, from, to, relation_type, index),
-            attributes,
-        }
-    }
+impl TryFrom<pb::grc20::RelationUpdate> for UpdateRelation {
+    type Error = ConversionError;
 
-    pub fn insert(
-        self,
-        neo4j: &neo4rs::Graph,
-        block: &BlockMetadata,
-        space_id: impl Into<String>,
-        space_version: impl Into<String>,
-    ) -> InsertOneQuery<Self> {
-        InsertOneQuery::new(neo4j, block, space_id.into(), space_version.into(), self)
+    fn try_from(pb_update: pb::grc20::RelationUpdate) -> Result<Self, Self::Error> {
+        let id = Uuid::from_bytes(
+            pb_update
+                .id
+                .try_into()
+                .map_err(|e| ConversionError::InvalidUuid("id".to_string(), format!("{e:?}")))?,
+        );
+
+        let from_space = match pb_update.from_space {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("from_space".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+
+        let from_version = match pb_update.from_version {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("from_version".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+
+        let to_space = match pb_update.to_space {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("to_space".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+
+        let to_version = match pb_update.to_version {
+            Some(bytes) => Some(Uuid::from_bytes(bytes.try_into().map_err(|e| {
+                ConversionError::InvalidUuid("to_version".to_string(), format!("{e:?}"))
+            })?)),
+            None => None,
+        };
+
+        Ok(Self {
+            id,
+            from_space,
+            from_version,
+            to_space,
+            to_version,
+            position: pb_update.position,
+            verified: pb_update.verified,
+        })
+    }
+}
+
+impl From<UpdateRelation> for BoltType {
+    fn from(update: UpdateRelation) -> Self {
+        let mut map = HashMap::new();
+
+        if let Some(from_space) = update.from_space {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "from_space".into(),
+                },
+                from_space.to_string().into(),
+            );
+        }
+
+        if let Some(from_version) = update.from_version {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "from_version".into(),
+                },
+                from_version.to_string().into(),
+            );
+        }
+
+        if let Some(to_space) = update.to_space {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "to_space".into(),
+                },
+                to_space.to_string().into(),
+            );
+        }
+
+        if let Some(to_version) = update.to_version {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "to_version".into(),
+                },
+                to_version.to_string().into(),
+            );
+        }
+
+        if let Some(position) = update.position {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "position".into(),
+                },
+                position.into(),
+            );
+        }
+
+        if let Some(verified) = update.verified {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "verified".into(),
+                },
+                verified.into(),
+            );
+        }
+
+        BoltType::Map(neo4rs::BoltMap { value: map })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct UnsetRelationFields {
+    pub id: Uuid,
+    pub from_space: Option<bool>,
+    pub from_version: Option<bool>,
+    pub to_space: Option<bool>,
+    pub to_version: Option<bool>,
+    pub position: Option<bool>,
+    pub verified: Option<bool>,
+}
+
+impl TryFrom<pb::grc20::UnsetRelationFields> for UnsetRelationFields {
+    type Error = ConversionError;
+
+    fn try_from(pb_unset: pb::grc20::UnsetRelationFields) -> Result<Self, Self::Error> {
+        let id = Uuid::from_bytes(
+            pb_unset
+                .id
+                .try_into()
+                .map_err(|e| ConversionError::InvalidUuid("id".to_string(), format!("{e:?}")))?,
+        );
+
+        Ok(Self {
+            id,
+            from_space: pb_unset.from_space,
+            from_version: pb_unset.from_version,
+            to_space: pb_unset.to_space,
+            to_version: pb_unset.to_version,
+            position: pb_unset.position,
+            verified: pb_unset.verified,
+        })
+    }
+}
+
+impl From<UnsetRelationFields> for BoltType {
+    fn from(unset: UnsetRelationFields) -> Self {
+        let mut map = HashMap::new();
+
+        if unset.from_space == Some(true) {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "from_space".into(),
+                },
+                BoltType::Null(neo4rs::BoltNull),
+            );
+        }
+        if unset.from_version == Some(true) {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "from_version".into(),
+                },
+                BoltType::Null(neo4rs::BoltNull),
+            );
+        }
+        if unset.to_space == Some(true) {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "to_space".into(),
+                },
+                BoltType::Null(neo4rs::BoltNull),
+            );
+        }
+        if unset.to_version == Some(true) {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "to_version".into(),
+                },
+                BoltType::Null(neo4rs::BoltNull),
+            );
+        }
+        if unset.position == Some(true) {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "position".into(),
+                },
+                BoltType::Null(neo4rs::BoltNull),
+            );
+        }
+        if unset.verified == Some(true) {
+            map.insert(
+                neo4rs::BoltString {
+                    value: "verified".into(),
+                },
+                BoltType::Null(neo4rs::BoltNull),
+            );
+        }
+
+        BoltType::Map(neo4rs::BoltMap { value: map })
     }
 }

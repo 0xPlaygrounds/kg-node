@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package grc20;
+
+message Edit {
+  bytes id = 1;
+  string name = 2;
+  repeated Op ops = 3;
+  repeated bytes authors = 4;
+  optional bytes language = 5;
+}
+
+message ImportEdit {
+  bytes id = 1;
+  string name = 2;
+  repeated Op ops = 3;
+  repeated bytes authors = 4;
+  bytes created_by = 5;
+  string created_at = 6;
+  bytes block_hash = 7;
+  string block_number = 8;
+  bytes transaction_hash = 9;
+}
+
+message Import {
+  // these strings are IPFS cids representing the import edit message
+  repeated string edits = 1;
+}
+
+message File {
+  string version = 1;
+
+  oneof payload {
+    Edit add_edit = 2;
+    Import import_space = 3;
+    bytes archive_space = 4;
+  }
+}
+
+message Op {
+  oneof payload {
+    Entity             update_entity = 1;
+    Relation           create_relation = 2;
+    RelationUpdate     update_relation = 3;
+    bytes              delete_relation = 4;
+    Property           create_property = 5;
+    UnsetEntityValues        unset_entity_values = 6;
+    UnsetRelationFields      unset_relation_fields = 7;
+  }
+}
+
+enum DataType {
+    TEXT = 0;
+    NUMBER = 1;
+    CHECKBOX = 2;
+    TIME = 3;
+    POINT = 4;
+    RELATION = 5;
+}
+
+message Property {
+    bytes id = 1;
+    DataType data_type = 2;
+}
+
+message UnsetEntityValues {
+  bytes id = 1;
+  repeated bytes properties = 2;
+}
+
+message Relation {
+  bytes id = 1;
+  bytes type = 2;
+  bytes from_entity = 3;
+  optional bytes from_space = 4;
+  optional bytes from_version = 5;
+  bytes to_entity = 6;
+  optional bytes to_space = 7;
+  optional bytes to_version = 8;
+  bytes entity = 9;
+  optional string position = 10;
+  optional bool verified = 11;
+}
+
+message RelationUpdate {
+  bytes id = 1;
+  optional bytes from_space = 2;
+  optional bytes from_version = 3;
+  optional bytes to_space = 4;
+  optional bytes to_version = 5;
+  optional string position = 6;
+  optional bool verified = 7;
+}
+
+message UnsetRelationFields {
+  bytes id = 1;
+  optional bool from_space = 2;
+  optional bool from_version = 3;
+  optional bool to_space = 4;
+  optional bool to_version = 5;
+  optional bool position = 6;
+  optional bool verified = 7;
+}
+
+message Entity {
+  bytes id = 1;
+  repeated Value values = 2;
+}
+
+message Options {
+  oneof value {
+    TextOptions   text   = 1;
+    NumberOptions number = 2;
+  }
+}
+
+message Value {
+  bytes property = 1;
+  string value = 2;
+  optional Options options = 3;
+}
+
+message TextOptions {
+  optional bytes language = 1;
+}
+
+message NumberOptions {
+  optional bytes unit = 1;
+}

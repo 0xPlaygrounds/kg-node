@@ -4,13 +4,9 @@ use anyhow::Error;
 use axum::{response::Json, routing::get, Router};
 use cache::{CacheConfig, KgCache};
 use clap::{Args, Parser};
-use grc20_core::{
-    block::BlockMetadata,
-    indexer_ids,
-    mapping::{self, query_utils::Query, triple},
-    neo4rs,
-};
-use sink::bootstrap;
+use grc20_core::entity::UpdateEntity;
+use grc20_core::value::Value;
+use grc20_core::{indexer_ids, neo4rs};
 use sink::{events::EventHandler, metrics};
 use std::time::Duration;
 use substreams_utils::Sink;
@@ -182,28 +178,30 @@ pub async fn reset_db(handler: &EventHandler) -> anyhow::Result<()> {
             "CREATE INDEX relation_id_index FOR () -[r:RELATION]-> () ON (r.id)",
         ))
         .await?;
-    handler
-        .neo4j()
-        .run(neo4rs::query(
-            "CREATE INDEX relation_type_index FOR () -[r:RELATION]-> () ON (r.relation_type)",
-        ))
-        .await?;
 
     handler.neo4j()
         .run(neo4rs::query(&format!(
-            "CREATE VECTOR INDEX vector_index FOR (a:Indexed) ON (a.embedding) OPTIONS {{indexConfig: {{`vector.dimensions`: {}, `vector.similarity_function`: 'COSINE'}}}}",
+            "CREATE VECTOR INDEX vector_index FOR (p:Properties) ON (p.embedding) OPTIONS {{indexConfig: {{`vector.dimensions`: {}, `vector.similarity_function`: 'COSINE'}}}}",
             handler.embedding_dim()
         )))
         .await?;
 
-    // Bootstrap indexer entities
-    mapping::triple::insert_many(
+    // // Bootstrap indexer entities
+    // mapping::triple::insert_many(
+    //     handler.neo4j(),
+    //     &BlockMetadata::default(),
+    //     indexer_ids::INDEXER_SPACE_ID,
+    //     "0",
+    // )
+    // .triples(bootstrap::boostrap_indexer::triples())
+    // .send()
+    // .await?;
+    grc20_core::entity::update_one(
         handler.neo4j(),
-        &BlockMetadata::default(),
+        UpdateEntity::new(indexer_ids::CURSOR_ID)
+            .value(Value::new(indexer_ids::VERSION_ATTRIBUTE, env!("GIT_TAG"))),
         indexer_ids::INDEXER_SPACE_ID,
-        "0",
     )
-    .triples(bootstrap::boostrap_indexer::triples())
     .send()
     .await?;
 
@@ -211,29 +209,25 @@ pub async fn reset_db(handler: &EventHandler) -> anyhow::Result<()> {
 }
 
 async fn migration_check(handler: &EventHandler) -> Result<(), Error> {
-    let version = triple::find_one(
+    let version = grc20_core::value::find_one(
         handler.neo4j(),
-        indexer_ids::VERSION_ATTRIBUTE,
-        indexer_ids::CURSOR_ID,
         indexer_ids::INDEXER_SPACE_ID,
-        Some("0".to_string()),
+        indexer_ids::CURSOR_ID,
+        indexer_ids::VERSION_ATTRIBUTE,
     )
     .send()
     .await?;
 
     if let Some(version) = version {
-        if version.value.value != env!("GIT_TAG") {
+        if version.value != env!("GIT_TAG") {
             tracing::info!(
                 "Version mismatch. Resetting the database. Old version: {}, New version: {}",
-                version.value.value,
+                version.value,
                 env!("GIT_TAG")
             );
             reset_db(handler).await?;
         } else {
-            tracing::info!(
-                "Version match: {}. No migration needed.",
-                version.value.value
-            );
+            tracing::info!("Version match: {}. No migration needed.", version.value);
         }
     } else {
         tracing::info!("No version found in the database. Resetting the database.");

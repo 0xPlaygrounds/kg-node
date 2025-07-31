@@ -26,13 +26,14 @@ lazy_static = "1.4"
 
 substreams-utils = { version = "0.1.0", path = "../substreams-utils" }
 grc20-core = { version = "0.1.0", path = "../grc20-core" }
-grc20-sdk = { version = "0.1.0", path = "../grc20-sdk" }
+# grc20-sdk = { version = "0.1.0", path = "../grc20-sdk" }
 ipfs = { version = "0.1.0", path = "../ipfs" }
 web3-utils = { version = "0.1.0", path = "../web3-utils" }
 cache = { version = "0.1.0", path = "../cache" }
 tracing-appender = "0.2.3"
 serde_yaml = "0.9.34"
 fastembed = "4.8.0"
+uuid = "1.17.0"
 
 [dev-dependencies]
 serde_path_to_error = "0.1.16"

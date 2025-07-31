@@ -26,6 +26,7 @@ services:
       NEO4J_server_memory_pagecache_size: 2G
       NEO4J_server_memory_heap_initial__size: 2G
       NEO4J_server_memory_heap_max__size: 4G
+      NEO4J_PLUGINS: '["apoc"]'
     healthcheck:
       test: wget http://localhost:7474 || exit 1
       interval: 1s

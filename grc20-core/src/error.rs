@@ -1,4 +1,4 @@
-use crate::mapping;
+// use crate::mapping;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DatabaseError {
@@ -10,8 +10,8 @@ pub enum DatabaseError {
     SerializationError(#[from] serde_json::Error),
     // #[error("SetTripleError: {0}")]
     // SetTripleError(#[from] mapping::entity::SetTripleError),
-    #[error("TripleError: {0}")]
-    TripleError(#[from] mapping::TriplesConversionError),
+    // #[error("TripleError: {0}")]
+    // TripleError(#[from] mapping::TriplesConversionError),
     #[error("Infaillible")]
     Infaillible(#[from] std::convert::Infallible),
     #[error("Not found: {0}")]

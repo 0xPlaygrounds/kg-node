@@ -1,72 +1,50 @@
-use neo4rs::Path;
+use uuid::Uuid;
 
 use crate::{
-    entity::EntityFilter,
     error::DatabaseError,
-    mapping::{
-        order_by::FieldOrderBy,
-        query_utils::{
-            query_builder::{MatchQuery, QueryBuilder, Subquery},
-            VersionFilter,
-        },
-        AttributeFilter, PropFilter, Query,
-    },
-    system_ids::SCHEMA_TYPE,
+    mapping::query_utils::{MatchQuery, QueryBuilder, Subquery},
+    system_ids,
 };
 
-pub struct Relation {
-    pub nodes_ids: Vec<String>,
-    pub relations_ids: Vec<String>,
+// use crate::{
+//     // entity::EntityFilter,
+//     error::DatabaseError,
+//     mapping::{
+//         // order_by::FieldOrderBy,
+//         query_utils::{
+//             query_builder::{MatchQuery, QueryBuilder, Subquery},
+//             VersionFilter,
+//         },
+//         AttributeFilter, PropFilter, Query,
+//     },
+//     system_ids::SCHEMA_TYPE,
+// };
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Path {
+    pub nodes_ids: Vec<Uuid>,
+    pub relation_type_ids: Vec<Uuid>,
 }
 
 pub struct FindPathQuery {
     neo4j: neo4rs::Graph,
-    id1: String,
-    id2: String,
-    filter: EntityFilter,
-    order_by: Option<FieldOrderBy>,
+    id1: Uuid,
+    id2: Uuid,
     limit: usize,
-    skip: Option<usize>,
-    space_id: Option<PropFilter<String>>,
-    version: VersionFilter,
+}
+
+pub fn find_path(neo4j: &neo4rs::Graph, id1: Uuid, id2: Uuid) -> FindPathQuery {
+    FindPathQuery::new(neo4j, id1, id2)
 }
 
 impl FindPathQuery {
-    pub(super) fn new(neo4j: &neo4rs::Graph, id1: String, id2: String) -> Self {
+    pub fn new(neo4j: &neo4rs::Graph, id1: Uuid, id2: Uuid) -> Self {
         Self {
             neo4j: neo4j.clone(),
             id1,
             id2,
-            filter: EntityFilter::default(),
-            order_by: None,
-            limit: 100,
-            skip: None,
-            space_id: None,
-            version: VersionFilter::default(),
+            limit: 100, // Default limit
         }
-    }
-
-    pub fn id(mut self, id: PropFilter<String>) -> Self {
-        self.filter.id = Some(id);
-        self
-    }
-
-    pub fn attribute(mut self, attribute: AttributeFilter) -> Self {
-        self.filter.attributes.push(attribute);
-        self
-    }
-
-    pub fn attribute_mut(&mut self, attribute: AttributeFilter) {
-        self.filter.attributes.push(attribute);
-    }
-
-    pub fn attributes(mut self, attributes: impl IntoIterator<Item = AttributeFilter>) -> Self {
-        self.filter.attributes.extend(attributes);
-        self
-    }
-
-    pub fn attributes_mut(&mut self, attributes: impl IntoIterator<Item = AttributeFilter>) {
-        self.filter.attributes.extend(attributes);
     }
 
     pub fn limit(mut self, limit: usize) -> Self {
@@ -74,54 +52,18 @@ impl FindPathQuery {
         self
     }
 
-    pub fn skip(mut self, skip: usize) -> Self {
-        self.skip = Some(skip);
-        self
-    }
-
-    /// Overwrite the current filter with a new one
-    pub fn with_filter(mut self, filter: EntityFilter) -> Self {
-        self.filter = filter;
-        self
-    }
-
-    pub fn order_by(mut self, order_by: FieldOrderBy) -> Self {
-        self.order_by = Some(order_by);
-        self
-    }
-
-    pub fn order_by_mut(&mut self, order_by: FieldOrderBy) {
-        self.order_by = Some(order_by);
-    }
-
-    pub fn space_id(mut self, space_id: impl Into<PropFilter<String>>) -> Self {
-        self.space_id = Some(space_id.into());
-        self
-    }
-
-    pub fn version(mut self, space_version: String) -> Self {
-        self.version.version_mut(space_version);
-        self
-    }
-
-    pub fn version_opt(mut self, space_version: Option<String>) -> Self {
-        self.version.version_opt(space_version);
-        self
-    }
-
     fn subquery(&self) -> QueryBuilder {
         QueryBuilder::default()
             .subquery(MatchQuery::new(
                 "p = allShortestPaths((e1:Entity {id: $id1}) -[:RELATION*1..10]-(e2:Entity {id: $id2}))",
-            ).r#where(format!("NONE(n IN nodes(p) WHERE EXISTS((n)-[:RELATION]-(:Entity {{id: \"{SCHEMA_TYPE}\"}})))")))//makes sure to not use primitive types
+            )
+            .r#where(format!("NONE(n IN nodes(p) WHERE EXISTS((n)-[:RELATION]-(:Entity {{id: \"{}\"}})))", system_ids::SCHEMA_TYPE))) //makes sure to not use primitive types
             .limit(self.limit)
-            .params("id1", self.id1.clone())
-            .params("id2", self.id2.clone())
+            .params("id1", self.id1.to_string())
+            .params("id2", self.id2.to_string())
     }
-}
 
-impl Query<Vec<Relation>> for FindPathQuery {
-    async fn send(self) -> Result<Vec<Relation>, DatabaseError> {
+    pub async fn send(self) -> Result<Vec<Path>, DatabaseError> {
         let query = self.subquery().r#return("p");
 
         if cfg!(debug_assertions) || cfg!(test) {
@@ -137,19 +79,19 @@ impl Query<Vec<Relation>> for FindPathQuery {
 
         // Process each row
         while let Some(row) = result.next().await? {
-            let path: Path = row.get("p")?;
+            let path: neo4rs::Path = row.get("p")?;
             tracing::info!("This is the info for Path: {:?}", path);
 
-            let relationship_data: Relation = Relation {
+            let relationship_data = Path {
                 nodes_ids: (path
                     .nodes()
                     .iter()
                     .filter_map(|rel| rel.get("id").ok())
                     .collect()),
-                relations_ids: (path
+                relation_type_ids: (path
                     .rels()
                     .iter()
-                    .filter_map(|rel| rel.get("relation_type").ok())
+                    .filter_map(|rel| rel.get("type").ok())
                     .collect()),
             };
 

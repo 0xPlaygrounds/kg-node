@@ -15,7 +15,7 @@ use crate::models::space::ParentSpacesQuery;
 use super::{base_entity, space::SubspacesQuery, BaseEntity};
 
 #[grc20_core::entity]
-#[grc20(schema_type = system_ids::ATTRIBUTE)]
+#[grc20(schema_type = system_ids::PROPERTY_TYPE)]
 pub struct Property {
     #[grc20(attribute = system_ids::AGGREGATION_DIRECTION)]
     pub aggregation_direction: Option<AggregationDirection>,
