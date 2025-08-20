@@ -231,6 +231,9 @@ impl TraverseRelation {
             RelationDirection::To => {
                 format!("({node_var_dest}) -[{rel_edge_var}:RELATION]-> ({node_var_curr})")
             }
+            RelationDirection::Both => {
+                format!("({node_var_curr}) -[{rel_edge_var}:RELATION]- ({node_var_dest})")
+            }
         })
         // rename to change direction of relation
         .rename(Rename::new(NamePair::new(

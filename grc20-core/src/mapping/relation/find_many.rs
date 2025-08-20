@@ -123,8 +123,8 @@ impl<T> FindManyQuery<T> {
                     .r#where(self.version.subquery("r")),
             )
             .subquery(self.filter.subquery("r", "from", "to"))
-            .subquery("ORDER BY r.index")
             .limit(self.limit)
+            .subquery("ORDER BY r.index")
             .skip_opt(self.skip)
     }
 

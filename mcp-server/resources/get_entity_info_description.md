@@ -23,39 +23,21 @@ ToolResult>
       "name": "SF Mayor Lurie launching police task force to counter crime in core downtown areas",
       "relation_id": "8ESicJHiNJ28VGL5u34A5q",
       "relation_type": "Related spaces"
-    },
-    {
-      "id": "6wAoNdGVbweKi2JRPZP4bX",
-      "name": "San Francisco Independent Film Festival",
-      "relation_id": "TH5Tu5Y5nacvREvAQRvcR2",
-      "relation_type": "Related spaces"
-    },
-    {
-      "id": "8VCHYDURDStwuTCUBjWLQa",
-      "name": "Product Engineer at Geo",
-      "relation_id": "KPTqdNpCusxfM37KbKPX8w",
-      "relation_type": "Related spaces"
-    }, ...
+    }
   ],
   "outbound_relations": [
-    {
-      "id": "7gzF671tq5JTZ13naG4tnr",
-      "name": "Space",
-      "relation_id": "WUZCXE1UGRtxdNQpGug8Tf",
-      "relation_type": "Types"
-    },
-    {
-      "id": "CUoEazCD7EmzXPTFFY8gGY",
-      "name": "No name",
-      "relation_id": "5WeSkkE1XXvGJGmXj9VUQ8",
-      "relation_type": "Cover"
-    },
     {
       "id": "D6Wy4bdtdoUrG3PDZceHr",
       "name": "City",
       "relation_id": "ARMj8fjJtdCwbtZa1f3jwe",
       "relation_type": "Types"
-    }, ...
+    },
+    {
+      "id": "AhidiWYnQ8fAbHqfzdU74k",
+      "name": "Upcoming events",
+      "relation_id": "V1ikGW9riu7dAP8rMgZq3u",
+      "relation_type": "Blocks"
+    }
   ]
 }
 ```

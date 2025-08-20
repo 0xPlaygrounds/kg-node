@@ -526,6 +526,7 @@ pub struct FindManyQuery {
     value_type: Option<PropFilter<String>>,
     entity_id: Option<PropFilter<String>>,
     space_id: Option<PropFilter<String>>,
+    limit: usize,
     space_version: VersionFilter,
 }
 
@@ -538,6 +539,7 @@ impl FindManyQuery {
             value_type: None,
             entity_id: None,
             space_id: None,
+            limit: 100,
             space_version: VersionFilter::default(),
         }
     }
@@ -564,6 +566,11 @@ impl FindManyQuery {
 
     pub fn space_id(mut self, filter: PropFilter<String>) -> Self {
         self.space_id = Some(filter);
+        self
+    }
+
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
         self
     }
 
@@ -595,6 +602,7 @@ impl FindManyQuery {
                     )
                     .r#where(self.space_version.subquery("r")),
             )
+            .limit(self.limit)
             .subquery("RETURN n{.*, entity: e.id}")
     }
 }

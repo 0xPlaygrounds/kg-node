@@ -7,8 +7,9 @@ pub struct SearchTraversalInputFilter {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct TraversalFilter {
-    pub direction: RelationDirection,
     pub relation_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<RelationDirection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traversal_filter: Option<Box<TraversalFilter>>,
 }

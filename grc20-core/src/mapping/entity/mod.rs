@@ -141,10 +141,7 @@ pub fn prefiltered_search<T>(
     PrefilteredSemanticSearchQuery::new(neo4j, vector)
 }
 
-pub fn search_from_restictions<T>(
-    neo4j: &neo4rs::Graph,
-    vector: Vec<f64>,
-) -> SearchWithTraversals<T> {
+pub fn traversal_search<T>(neo4j: &neo4rs::Graph, vector: Vec<f64>) -> SearchWithTraversals<T> {
     SearchWithTraversals::new(neo4j, vector)
 }
 

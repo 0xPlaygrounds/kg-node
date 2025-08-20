@@ -233,7 +233,7 @@ impl<T> Entity<T> {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq)]
 pub struct SystemProperties {
     #[serde(rename = "82nP7aFmHJLbaPFszj2nbx")] // CREATED_AT_TIMESTAMP
     pub created_at: DateTime<Utc>,
@@ -243,6 +243,8 @@ pub struct SystemProperties {
     pub updated_at: DateTime<Utc>,
     #[serde(rename = "7pXCVQDV9C7ozrXkpVg8RJ")] // UPDATED_AT_BLOCK
     pub updated_at_block: String,
+    #[serde(rename = "pagerank")]
+    pub page_rank: Option<f64>,
 }
 
 impl From<BlockMetadata> for SystemProperties {
@@ -252,6 +254,7 @@ impl From<BlockMetadata> for SystemProperties {
             created_at_block: block.block_number.to_string(),
             updated_at: block.timestamp,
             updated_at_block: block.block_number.to_string(),
+            page_rank: None,
         }
     }
 }
@@ -263,6 +266,7 @@ impl Default for SystemProperties {
             created_at_block: "0".to_string(),
             updated_at: Default::default(),
             updated_at_block: "0".to_string(),
+            page_rank: None,
         }
     }
 }

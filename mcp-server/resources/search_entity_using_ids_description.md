@@ -9,30 +9,24 @@ ToolCall>
 search_entity_using_ids({
 "query": "The Graph",
 "traversal_filter": {
-  "relation_type": "U1uCAzXsRSTP4vFwo1JwJG",
-  "direction": "From"
+  "relation_type": "U1uCAzXsRSTP4vFwo1JwJG"
 }
 })
 ```
 ToolResult>
 ```
-{
-  "entities": [
-    {
-      "description": "Founder & CEO of Geo. Cofounder of The Graph, Edge & Node, House of Web3. Building a vibrant decentralized future.",
-      "id": "9HsfMWYHr9suYdMrtssqiX",
-      "name": "Yaniv Tal"
-    },
-    {
-      "description": "Developer Relations Engineer",
-      "id": "22MGz47c9WHtRiHuSEPkcG",
-      "name": "Kevin Jones"
-    },
-    {
-      "description": "Description will go here",
-      "id": "JYTfEcdmdjiNzBg469gE83",
-      "name": "Pedro Diogo"
-    }
-  ]
-}
+[
+  0: { description: "Founder & CEO of Geo. Cofounder of The Graph, Edge & Node, House of Web3. Building a vibrant decentralized future."
+  id: "9HsfMWYHr9suYdMrtssqiX"
+  name: "Yaniv Tal"
+  }
+  1: { description: "Developer Relations Engineer"
+  id: "22MGz47c9WHtRiHuSEPkcG"
+  name: "Kevin Jones"
+  }
+  2: { description: "Description will go here"
+  id: "JYTfEcdmdjiNzBg469gE83"
+  name: "Pedro Diogo"
+  }
+]
 ```

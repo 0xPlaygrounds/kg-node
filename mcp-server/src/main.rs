@@ -109,6 +109,7 @@ impl KnowledgeGraph {
         RawResource::new(uri, name.to_string()).no_annotation()
     }
 
+    // Tools that are available in the mcp server
     #[tool(description = include_str!("../resources/search_type_description.md"))]
     async fn search_types(
         &self,
@@ -172,15 +173,7 @@ impl KnowledgeGraph {
     ) -> Result<CallToolResult, McpError> {
         tracing::info!("SearchTraversalFilter query: {:?}", search_traversal_filter);
 
-        let embedding = self
-            .embedding_model
-            .embed(vec![&search_traversal_filter.query], None)
-            .expect("Failed to get embedding")
-            .pop()
-            .expect("Embedding is empty")
-            .into_iter()
-            .map(|v| v as f64)
-            .collect::<Vec<_>>();
+        let embedding = self.create_embedding(vec![&search_traversal_filter.query]);
 
         let traversal_filters: Vec<Result<TraverseRelation, McpError>> =
             match search_traversal_filter.traversal_filter {
@@ -188,8 +181,11 @@ impl KnowledgeGraph {
                     join_all(traversal_filter_input.into_iter().map(|filter| async move {
                         Ok(TraverseRelation::default()
                             .direction(match filter.direction {
-                                input_types::RelationDirection::From => RelationDirection::From,
-                                input_types::RelationDirection::To => RelationDirection::To,
+                                Some(direction) => match direction {
+                                    input_types::RelationDirection::From => RelationDirection::From,
+                                    input_types::RelationDirection::To => RelationDirection::To,
+                                },
+                                None => RelationDirection::Both,
                             })
                             .relation_type_id(prop_filter::value(filter.relation_type)))
                     }))
@@ -202,10 +198,7 @@ impl KnowledgeGraph {
         let results_search = traversal_filters
             .into_iter()
             .fold(
-                entity::search_from_restictions::<Entity<BaseEntity>>(
-                    &self.neo4j,
-                    embedding.clone(),
-                ),
+                entity::traversal_search::<Entity<BaseEntity>>(&self.neo4j, embedding.clone()),
                 |query, result_traversal_filter: Result<_, McpError>| match result_traversal_filter
                 {
                     Ok(traversal_filter) => {
@@ -258,15 +251,7 @@ impl KnowledgeGraph {
     ) -> Result<CallToolResult, McpError> {
         tracing::info!("SearchTraversalFilter query: {:?}", search_traversal_filter);
 
-        let embedding = self
-            .embedding_model
-            .embed(vec![&search_traversal_filter.query], None)
-            .expect("Failed to get embedding")
-            .pop()
-            .expect("Embedding is empty")
-            .into_iter()
-            .map(|v| v as f64)
-            .collect::<Vec<_>>();
+        let embedding = self.create_embedding(vec![&search_traversal_filter.query]);
 
         let start_filters = Instant::now();
 
@@ -287,8 +272,11 @@ impl KnowledgeGraph {
 
                         Ok(TraverseRelation::default()
                             .direction(match filter.direction {
-                                input_types::RelationDirection::From => RelationDirection::From,
-                                input_types::RelationDirection::To => RelationDirection::To,
+                                Some(direction) => match direction {
+                                    input_types::RelationDirection::From => RelationDirection::From,
+                                    input_types::RelationDirection::To => RelationDirection::To,
+                                },
+                                None => RelationDirection::Both,
                             })
                             .relation_type_id(prop_filter::value_in(relation_ids)))
                     }))
@@ -303,10 +291,7 @@ impl KnowledgeGraph {
         let results_search = traversal_filters
             .into_iter()
             .fold(
-                entity::search_from_restictions::<Entity<BaseEntity>>(
-                    &self.neo4j,
-                    embedding.clone(),
-                ),
+                entity::traversal_search::<Entity<BaseEntity>>(&self.neo4j, embedding.clone()),
                 |query, result_traversal_filter: Result<_, McpError>| match result_traversal_filter
                 {
                     Ok(traversal_filter) => {
@@ -432,8 +417,8 @@ impl KnowledgeGraph {
                 .into_iter()
                 .map(|result| async move {
                     json!({
-                        "relation_id": result.id,
-                        "relation_type": self.get_name_of_id(result.relation_type.clone()).await.unwrap_or(result.relation_type.to_string()),
+                        "relation_id": result.relation_type,
+                        "relation_type": self.get_name_of_id(result.relation_type).await.unwrap_or("No relation type".to_string()),
                         "id": if is_inbound {result.from.id.clone()} else {result.to.id.clone()},
                         "name": self.get_name_of_id(if is_inbound {result.from.id.clone()} else {result.to.id.clone()}).await.unwrap_or("No name".to_string()),
                     })
@@ -502,21 +487,25 @@ impl KnowledgeGraph {
         ))
     }
 
+    #[inline(always)]
+    fn create_embedding(&self, name: Vec<&str>) -> Vec<f64> {
+        self.embedding_model
+            .embed(name, None)
+            .expect("Failed to get embedding")
+            .pop()
+            .expect("No embedding found")
+            .into_iter()
+            .map(|v| v as f64)
+            .collect::<Vec<_>>()
+    }
+
     async fn query_search(
         &self,
         query: String,
         limit: Option<usize>,
         filter: EntityFilter,
     ) -> Result<Vec<String>, McpError> {
-        let embedding = self
-            .embedding_model
-            .embed(vec![&query], None)
-            .expect("Failed to get embedding")
-            .pop()
-            .expect("Embedding is empty")
-            .into_iter()
-            .map(|v| v as f64)
-            .collect::<Vec<_>>();
+        let embedding = self.create_embedding(vec![&query]);
 
         let limit = limit.unwrap_or(10);
         let semantic_search_triples =
@@ -528,7 +517,7 @@ impl KnowledgeGraph {
                 .map_err(|e| {
                     tracing::error!("Error: {e:?}");
                     McpError::internal_error(
-                        "search_types_failed",
+                        "query_search_failed",
                         Some(json!({ "error": e.to_string() })),
                     )
                 })?
@@ -537,7 +526,7 @@ impl KnowledgeGraph {
                 .map_err(|e| {
                     tracing::error!("Error changing to vec: {e:?}");
                     McpError::internal_error(
-                        "search_types_failed",
+                        "query_search_failed",
                         Some(json!({ "error": e.to_string() })),
                     )
                 })?;
@@ -587,7 +576,9 @@ impl KnowledgeGraph {
             .ok_or_else(|| {
                 McpError::internal_error("entity_name_not_found", Some(json!({ "id": id })))
             })?;
-        Ok(entity.attributes.name.unwrap_or("No name".to_string()))
+        entity.attributes.name.ok_or_else(|| {
+            McpError::internal_error("entity_name_not_found", Some(json!({ "id": id })))
+        })
     }
 }
 
@@ -617,53 +608,6 @@ impl ServerHandler for KnowledgeGraph {
             tracing::info!(?initialize_headers, %initialize_uri, "initialize from http server");
         }
         Ok(self.get_info())
-    }
-
-    //TODO: make prompt examples to use on data
-    async fn list_prompts(
-        &self,
-        _request: Option<PaginatedRequestParam>,
-        _: RequestContext<RoleServer>,
-    ) -> Result<ListPromptsResult, McpError> {
-        Ok(ListPromptsResult {
-            next_cursor: None,
-            prompts: vec![Prompt::new(
-                "example_prompt",
-                Some("This is an example prompt that takes one required argument, message"),
-                Some(vec![PromptArgument {
-                    name: "message".to_string(),
-                    description: Some("A message to put in the prompt".to_string()),
-                    required: Some(true),
-                }]),
-            )],
-        })
-    }
-
-    async fn get_prompt(
-        &self,
-        GetPromptRequestParam { name, arguments }: GetPromptRequestParam,
-        _: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
-        match name.as_str() {
-            "example_prompt" => {
-                let message = arguments
-                    .and_then(|json| json.get("message")?.as_str().map(|s| s.to_string()))
-                    .ok_or_else(|| {
-                        McpError::invalid_params("No message provided to example_prompt", None)
-                    })?;
-
-                let prompt =
-                    format!("This is an example prompt with your message here: '{message}'");
-                Ok(GetPromptResult {
-                    description: None,
-                    messages: vec![PromptMessage {
-                        role: PromptMessageRole::User,
-                        content: PromptMessageContent::text(prompt),
-                    }],
-                })
-            }
-            _ => Err(McpError::invalid_params("prompt not found", None)),
-        }
     }
 }
 

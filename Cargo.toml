@@ -8,5 +8,5 @@ members = [
     "web3-utils",
     "grc20-core",
     "grc20-macros",
-    "grc20-sdk", "mcp-server",
+    "grc20-sdk", "mcp-server", "ai-search",
 ]
